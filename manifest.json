@@ -1,0 +1,10 @@
+{
+  "id": "go-novel",
+  "name": "GoNovel",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Obsidian 小说管理插件：创作主页 + 写作工作台（六看板）+ 章节卡片 + 弹窗体系，简洁 UI、重管理。",
+  "author": "calibur88",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}
