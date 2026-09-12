@@ -9,8 +9,9 @@ main.js
 .tmp/
 
 # 封面素材：项目根 assets/cover/ 为用户自有封面图（不再依赖参考项目），随仓库上传；
-# demo/assets/cover/ 由脚本从根目录复制而来，同样入库以保证示例库可渲染、离线校验可跑；
+# demo/assets/cover/ 由脚本从根目录复制而来，是根 assets/cover/ 的副本——不入库（避免重复，本地生成即可）；
 # test-local/ 与 obsidian-webnovel-assistant/ 各自整体忽略，其中的 assets 自然不入库。
+demo/assets/
 
 # Obsidian
 .obsidian/
