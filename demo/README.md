@@ -19,7 +19,7 @@
 |---|---|
 | `小说项目/` | **干净样本**：一个可正常打开的小说项目。`主页.gnd` 是 home（`[欢迎词]` 变量 + `**SELECT**` 导入 2 部作品 + `**WHERE**` 展示 3 个字段），两个作品目录各一份 page |
 | `调试样例/` | **错例样本**：故意写错的 `.gnd`（01～07 + 作品甲／作品乙），喂右侧「调试信息」框的诊断。每个文件顶部注释都写明预期现象 |
-| `assets/` | **本地封面素材**：3 张 png，供 page 的 `gnd_image` 引用。**不进 git**（已在 `.gitignore` 里），由脚本从本地参考项目补齐 |
+| `assets/cover/` | **本地封面素材**：`cover-1~3.png` 等，供 page 的 `gnd_image` 引用。**不进 git**（已在 `.gitignore` 里），由脚本从项目根 `assets/cover/` 复制补齐 |
 | `data.example.json` | 设置快照：覆盖到 `.obsidian/plugins/go-novel/data.json` 即可复现下面的验收结果 |
 
 ## 预置内容（12 个 .gnd，按分类）
@@ -232,7 +232,7 @@ node scripts/demo.mjs --target <dir>   # 指定同步目标（默认 test-local�
 
 改样例的固定流程：改 `scripts/demo.mjs` 里的 `SAMPLES` / `DATA_JSON` → `node scripts/demo.mjs` → `node scripts/demo.mjs --check` 自检（含 README 内嵌快照一致性）→ `node scripts/demo.mjs --sync` 落到 `test-local/` 做真实环境验收。
 
-封面素材由 `IMAGES` 定义、从本地参考项目的 `assets/` 复制（源缺失只提示、不报错）。`assets/` 整个目录在 `.gitignore` 里，
+封面素材由 `IMAGES` 定义、从项目根的 `assets/cover/` 复制（源缺失只提示、不报错）。`assets/` 整个目录在 `.gitignore` 里，
 `--check` 不比对它 —— 你可以随意换成自己的图，`--sync` 也不会覆盖已存在的文件。
 
 生成/自检时会跑两道守卫：`validateDataJson()` 校验 `homePaths` 与 `homeColors` 同序等长、相邻配色不同；

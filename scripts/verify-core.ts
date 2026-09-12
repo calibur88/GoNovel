@@ -274,9 +274,9 @@ async function main(): Promise<void> {
 		{ label: "状态", value: "连载中" },
 	]);
 	// 封面：page 的 gnd_image 是 vault 相对路径，由 controller 归一化后交给宿主换算资源地址
-	check("封面保留声明原值", home.works[0]?.image, "assets/cover-1.png");
-	check("卡片 1 封面已解析", board.cards[0]?.cover?.endsWith("assets/cover-1.png") ?? false, true);
-	check("卡片 2 封面已解析", board.cards[1]?.cover?.endsWith("assets/cover-2.png") ?? false, true);
+	check("封面保留声明原值", home.works[0]?.image, "assets/cover/cover-1.png");
+	check("卡片 1 封面已解析", board.cards[0]?.cover?.endsWith("assets/cover/cover-1.png") ?? false, true);
+	check("卡片 2 封面已解析", board.cards[1]?.cover?.endsWith("assets/cover/cover-2.png") ?? false, true);
 	ok(
 		"作品卡已分配配色",
 		board.cards.every((c) => c.color !== null && CARD_PALETTE.indexOf(c.color) >= 0),
@@ -458,7 +458,7 @@ async function main(): Promise<void> {
 	ok(
 		"作品甲 封面缺失点名具体图片（detail）",
 		diags.some(
-			(item) => item.code === "COVER_IMAGE_MISSING" && item.detail.includes("assets/cover-9.png"),
+			(item) => item.code === "COVER_IMAGE_MISSING" && item.detail.includes("assets/cover/cover-9.png"),
 		),
 	);
 	ok("04 封面路径含 ..（COVER_PATH_INVALID）", has("04-", "warning", "COVER_PATH_INVALID"));

@@ -8,8 +8,9 @@ main.js
 # Local scratch
 .tmp/
 
-# 本地封面素材(demo.mjs 从参考项目复制而来，仅本地调试用，不入库)
-assets/
+# 封面素材：项目根 assets/cover/ 为用户自有封面图（不再依赖参考项目），随仓库上传；
+# demo/assets/cover/ 由脚本从根目录复制而来，同样入库以保证示例库可渲染、离线校验可跑；
+# test-local/ 与 obsidian-webnovel-assistant/ 各自整体忽略，其中的 assets 自然不入库。
 
 # Obsidian
 .obsidian/

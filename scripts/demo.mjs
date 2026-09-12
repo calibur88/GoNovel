@@ -7,7 +7,7 @@
  *   - 默认把定义写成干净示例库 demo/（进 git，可直接上传展示）；
  *   - --sync 时把 demo/ 覆盖同步到本地验收环境 test-local/，并把 data.json
  *     写到 test-local/.obsidian/plugins/go-novel/，让验收环境一键回到干净状态；
- *   - 封面素材（assets/）从本地参考项目复制，已在 .gitignore 里，不进 git。
+ *   - 封面素材（assets/cover/）用项目根 `assets/cover/` 下的自有图片，不进 git（.gitignore）。
  *
  * 用法（在项目根目录执行）：
  *   node scripts/demo.mjs                    重新生成 demo/
@@ -62,7 +62,7 @@ gnd_created: 2026-09-11
 	"小说项目/大宋仙途/大宋仙途.gnd": `---
 gnd_type: page
 gnd_created: 2026-09-11
-gnd_image: assets/cover-1.png
+gnd_image: assets/cover/cover-1.png
 ---
 
 [作者]
@@ -81,7 +81,7 @@ gnd_image: assets/cover-1.png
 	"小说项目/都市悬疑/都市悬疑.gnd": `---
 gnd_type: page
 gnd_created: 2026-09-11
-gnd_image: assets/cover-2.png
+gnd_image: assets/cover/cover-2.png
 ---
 
 [作者]
@@ -184,7 +184,7 @@ gnd_created: 2026-09-12
 	"调试样例/作品甲/作品甲.gnd": `---
 gnd_type: page
 gnd_created: 2026-09-12
-gnd_image: assets/cover-9.png
+gnd_image: assets/cover/cover-9.png
 ---
 
 [作者]
@@ -212,19 +212,20 @@ gnd_created: 2026-09-12
 };
 
 /**
- * 封面素材：目标相对路径 → 参考项目 `assets/` 下的源文件名。
+ * 封面素材：目标相对路径（写在 .gnd 的 `gnd_image` 里）→ 项目根 `assets/cover/` 下的源文件名。
  *
+ * 这是**自有**封面图（非参考项目）：用户放在 `E:/GoNovel/assets/cover/` 下，由脚本在生成 /
+ * 同步时复制进 demo/ 与 test-local/ 的 `assets/cover/`（覆盖写入，保证与源一致）。
  * `assets/` 已在 .gitignore 里——这些图仅本地调试用，不进 git，也不参与 --check。
- * 由 `copyImages()` 在生成 / 同步时补齐（已存在则跳过，源缺失只提示不报错）。
  */
 const IMAGES = {
-	"assets/cover-1.png": "homepage.png",
-	"assets/cover-2.png": "immersive-mode.png",
-	"assets/cover-3.png": "homepage_en.png",
+	"assets/cover/cover-1.png": "cover-1.png",
+	"assets/cover/cover-2.png": "cover-2.png",
+	"assets/cover/cover-3.png": "cover-3.png",
 };
 
-/** 封面素材来源：本地参考项目的素材目录（该项目不入库） */
-const IMAGE_SOURCE = path.join(ROOT, "obsidian-webnovel-assistant", "assets");
+/** 封面素材来源：项目根的 `assets/cover/`（自有封面图，不入库） */
+const IMAGE_SOURCE = path.join(ROOT, "assets", "cover");
 
 /**
  * 封面引用**故意不可用**的样例：这些文件里的 `gnd_image` 不指向 `IMAGES` 里的图，
@@ -318,30 +319,26 @@ async function exists(abs) {
 }
 
 /**
- * 把封面素材补进目标库的 `assets/`。
+ * 把封面素材从项目根的 `assets/cover/` 复制进目标库的 `assets/cover/`。
  *
- * 已存在的目标文件不覆盖（保留你自己替换的图）；源缺失只计入 missing，
- * 由调用方提示——参考项目是本地克隆，没有它也不该让整条流程失败。
+ * 覆盖写入（源是自有封面图，应以源为准）；源缺失只计入 missing 由调用方提示——
+ * 自有图在本地，缺失说明没放，不该让整条流程失败。
  */
 async function copyImages(targetDir) {
 	let copied = 0;
-	let skipped = 0;
 	let missing = 0;
 	for (const [rel, source] of Object.entries(IMAGES)) {
 		const to = path.join(targetDir, rel);
-		if (await exists(to)) {
-			skipped += 1;
+		const from = path.join(IMAGE_SOURCE, source);
+		if (!(await exists(from))) {
+			missing += 1;
 			continue;
 		}
-		try {
-			await fs.mkdir(path.dirname(to), { recursive: true });
-			await fs.copyFile(path.join(IMAGE_SOURCE, source), to);
-			copied += 1;
-		} catch {
-			missing += 1;
-		}
+		await fs.mkdir(path.dirname(to), { recursive: true });
+		await fs.copyFile(from, to);
+		copied += 1;
 	}
-	return { copied, skipped, missing };
+	return { copied, missing };
 }
 
 /** 统一打印封面素材的补齐结果 */
@@ -352,7 +349,7 @@ function reportImages(label, { copied, skipped, missing }) {
 	if (missing > 0) parts.push(`源缺失 ${missing}`);
 	log(`${label}封面素材：${parts.length > 0 ? parts.join("，") : "无"}`);
 	if (missing > 0) {
-		console.log(`    （缺的图请放到 ${path.relative(ROOT, IMAGE_SOURCE) || "参考项目 assets/"} 后重跑）`);
+		console.log(`    （缺的图请放到 ${path.relative(ROOT, IMAGE_SOURCE) || "assets/cover"} 后重跑）`);
 	}
 }
 

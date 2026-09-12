@@ -134,7 +134,7 @@ node .tmp/verify-core.cjs
 
 样例的唯一真相源是 `scripts/demo.mjs`（`SAMPLES` / `DATA_JSON` / `IMAGES`），`demo/` 与 `test-local/` 的样例都由它产出；
 `demo/` 是进 git 的干净示例库，`test-local/` 是挂着 Obsidian 的实时调试场（随用随覆盖）。
-封面素材放在两处的 `assets/` 下，由脚本从本地参考项目复制补齐——该目录**已在 `.gitignore` 里**，不进 git、不参与 `--check`。
+封面素材放在 `assets/cover/` 下，由脚本从项目根 `assets/cover/` 复制补齐——该目录**已在 `.gitignore` 里**，不进 git、不参与 `--check`。
 
 ### 用 Obsidian CLI 调试（打 `test-local`）
 
