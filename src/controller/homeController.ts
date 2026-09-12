@@ -6,6 +6,8 @@ import {
 	classifyHome,
 	extractWelcome,
 	findHome,
+	imageMimeType,
+	isHttpUrl,
 	normalizeAssetPath,
 	normalizeCardColors,
 	normalizePath,
@@ -13,6 +15,7 @@ import {
 	parseVariables,
 	parseWhere,
 	resolveImportPath,
+	detectImageType,
 	splitFrontmatter,
 	stripExtension,
 	type DirectoryEntry,
@@ -20,13 +23,16 @@ import {
 import {
 	DEFAULT_SETTINGS,
 	GND_EXTENSION,
+	IMAGE_CACHE_DIR,
 	mergeSettings,
+	type BoardDiscardedImage,
 	type Diagnostic,
 	type GndFrontmatter,
 	type GoNovelSettings,
 	type HomeControllerSnapshot,
 	type HomeDocSnapshot,
 	type IGoNovelHost,
+	type ImageCacheStore,
 	type WorkDocEntry,
 } from "../types";
 
@@ -35,6 +41,14 @@ const RUNTIME_LOG_LIMIT = 200;
 
 /** `.gnd` 变更后的合并刷新窗口（毫秒） */
 const REFRESH_DELAY = 300;
+
+/** 网络封面流水线的失败码（诊断级别一律 error） */
+type CoverFailureCode =
+	| "COVER_DOWNLOAD_FAILED"
+	| "COVER_NOT_FOUND"
+	| "COVER_INVALID_TYPE"
+	| "COVER_PARSE_FAILED"
+	| "COVER_WRITE_FAILED";
 
 /**
  * 主页控制器：持有设置快照与主页解析快照。
@@ -54,11 +68,20 @@ export class HomeController {
 	private runtimeLog: Diagnostic[] = [];
 	/** 调试框「刷新」进行中（用于按钮禁用态） */
 	private refreshing = false;
+	/** 图片废弃区：失效的网络封面记录（文档被删 + 加载失败两类，每次扫描时判定） */
+	private discardedImages: BoardDiscardedImage[] = [];
+	/** 网络封面流水线的失败明细（URL+来源 → 失败码），由 `diagnoseCover()` 转成 error 诊断、转成图片废弃区 */
+	private coverIssues = new Map<
+		string,
+		{ code: CoverFailureCode; message: string; detail: string; url: string; source: string }
+	>();
 	private listeners = new Set<() => void>();
 	private refreshChain: Promise<void> = Promise.resolve();
 	private saveChain: Promise<void> = Promise.resolve();
 	/** `.gnd` 变更合并刷新的防抖定时器 */
 	private refreshTimer: number | null = null;
+	/** 诊断「首次出现」序号登记（级别+错误码+路径 → seq）：跨扫描保持老问题的老位置 */
+	private diagnosticFirstSeen = new Map<string, number>();
 
 	/**
 	 * `.gnd` 变更后的合并刷新：300ms 防抖，连续变更只触发一次扫描。
@@ -110,6 +133,8 @@ export class HomeController {
 			debugEnabled: this.settings.debugEnabled,
 			homeColors: { ...this.settings.homeColors },
 			projectColors: { ...this.settings.projectColors },
+			discardedPaths: this.settings.discardedPaths.slice(),
+			imageCache: { ...this.settings.imageCache },
 		};
 	}
 
@@ -133,6 +158,7 @@ export class HomeController {
 		if (this.diagnostics.length === 0 && this.runtimeLog.length === 0) return;
 		this.diagnostics = [];
 		this.runtimeLog = [];
+		this.diagnosticFirstSeen.clear();
 		this.emit();
 	}
 
@@ -177,21 +203,40 @@ export class HomeController {
 	}
 
 	/**
-	 * 删除一个主页：文件移入系统回收站，再移除登记与配色。
+	 * 废弃一个主页：**不动文件**——从登记移出、记入废弃区（`discardedPaths`）。
 	 *
-	 * 文件本就不存在时只移除记录。返回是否发生了变更。
+	 * 返回是否发生了变更。要恢复直接重新登记即可（登记时自动移出废弃区）。
 	 */
-	async deleteHome(rawPath: string): Promise<boolean> {
+	async discardHome(rawPath: string): Promise<boolean> {
 		const path = normalizePath(rawPath);
 		if (this.settings.homePaths.indexOf(path) < 0) return false;
 
-		const trashed = await this.host.fileWriter.trash(path, true);
-		await this.removeHome(path);
-		this.host.notifier.notify(
-			trashed ? `已移入回收站：${basename(path)}` : `文件不存在，仅移除登记：${basename(path)}`,
-		);
-		this.logRuntime(`删除主页 | ${path}`);
+		const nextHome = this.settings.homePaths.filter((item) => item !== path);
+		const nextDiscarded =
+			this.settings.discardedPaths.indexOf(path) >= 0
+				? this.settings.discardedPaths.slice()
+				: [...this.settings.discardedPaths, path];
+		await this.updateSettings({ homePaths: nextHome, discardedPaths: nextDiscarded });
+		this.host.notifier.notify(`已废弃：${basename(path)}（文件保留）`);
+		this.logRuntime(`废弃主页 | ${path}`);
 		return true;
+	}
+
+	/** 已废弃的主页路径（拷贝） */
+	getDiscardedPaths(): string[] {
+		return this.settings.discardedPaths.slice();
+	}
+
+	/** 批量清理废弃记录：只从 data.json 移除登记，不删文件；返回实际移除数量 */
+	async removeDiscarded(paths: readonly string[]): Promise<number> {
+		if (paths.length === 0) return 0;
+		const drop = new Set(paths.map((item) => normalizePath(item)));
+		const next = this.settings.discardedPaths.filter((item) => !drop.has(item));
+		const removed = this.settings.discardedPaths.length - next.length;
+		if (removed === 0) return 0;
+		await this.updateSettings({ discardedPaths: next });
+		this.logRuntime(`清理完成 | 共清理 ${removed} 条废弃记录`);
+		return removed;
 	}
 
 	/** 批量移除若干登记项（同步移除配色），返回实际移除数量 */
@@ -218,6 +263,47 @@ export class HomeController {
 	/** 当前快照中状态为「缺失」的路径 */
 	getMissingPaths(): string[] {
 		return this.snapshot.homes.filter((home) => home.status === "missing").map((home) => home.filePath);
+	}
+
+	/** 图片废弃区记录（来源 .gnd 已不存在；上次扫描时判定，拷贝） */
+	getDiscardedImages(): BoardDiscardedImage[] {
+		return this.discardedImages.slice();
+	}
+
+	/**
+	 * 批量清理图片缓存记录：只从 `data.json` 移除，`.gn-data/image/` 下的图片文件一律不动。
+	 *
+	 * 返回实际移除数量；来源记录销毁后，下次扫描不会再出现在图片废弃区。
+	 */
+	async removeImageCache(urls: readonly string[]): Promise<number> {
+		if (urls.length === 0) return 0;
+		const drop = new Set(urls);
+		const removedItems = this.settings.imageCache.items.filter((item) => drop.has(item.url));
+		if (removedItems.length === 0) return 0;
+
+		// 1. 删除记录 + 2. 删除磁盘缓存文件（缓存是一次性产物，直接删、不进回收站）
+		for (const item of removedItems) {
+			await this.host.imageCache.remove(item.local);
+		}
+		const nextItems = this.settings.imageCache.items.filter((item) => !drop.has(item.url));
+		this.discardedImages = this.discardedImages.filter((item) => !drop.has(item.url));
+		await this.updateSettings({ imageCache: { kind: "image-cache", items: nextItems } });
+		this.logRuntime(`清理完成 | 共清理 ${removedItems.length} 条失效图片（含缓存文件）`);
+
+		// 4. 关联文档仍在、且其当前声明的网络封面仍然失效 → 提示文档图片路径无效（请修正文档）
+		const invalidDocs = new Set<string>();
+		for (const item of removedItems) {
+			for (const home of this.snapshot.homes) {
+				const work = home.works.find((entry) => entry.filePath === item.source);
+				if (work !== undefined && work.remoteUrl !== null && work.imageUrl === null) {
+					invalidDocs.add(item.source);
+				}
+			}
+		}
+		if (invalidDocs.size > 0) {
+			this.host.notifier.notify(`图片路径无效：${[...invalidDocs].join("、")}（请修正 gnd_image）`);
+		}
+		return removedItems.length;
 	}
 
 	/** 向用户发一条提示（转发给宿主的提示器） */
@@ -285,6 +371,7 @@ export class HomeController {
 	}
 
 	private async scan(): Promise<void> {
+		this.coverIssues.clear();
 		const paths = this.settings.homePaths.slice();
 		const homes: HomeDocSnapshot[] = [];
 		for (const path of paths) {
@@ -319,6 +406,29 @@ export class HomeController {
 		this.diagnostics = this.settings.debugEnabled
 			? (await this.collectDiagnostics(homes)).items
 			: [];
+
+		// 图片废弃区：**只由 data.json 的缓存记录驱动**（实时下载失败不建卡，只出诊断）——
+		// 记录失效 = ① 来源文档被删；② 文档已导入但不再声明该 URL（改链接后的孤儿记录）；
+		// ③ 文档已导入、URL 未变但封面加载失败。文档存在但未被导入：默认忽略。
+		// 这样「清理」删掉记录后卡片不会复现；文档里仍失效的链接只在清理时提示。
+		const discardedImages: BoardDiscardedImage[] = [];
+		const worksByPath = new Map<string, WorkDocEntry>();
+		for (const home of homes) {
+			for (const work of home.works) worksByPath.set(work.filePath, work);
+		}
+		for (const item of this.settings.imageCache.items) {
+			const sourceStat = await this.host.dataSource.stat(item.source);
+			if (!sourceStat.exists) {
+				discardedImages.push({ url: item.url, source: item.source });
+				continue;
+			}
+			const work = worksByPath.get(item.source);
+			if (work === undefined) continue; // 文档存在但未导入：默认忽略
+			if (work.remoteUrl !== item.url || work.imageUrl === null) {
+				discardedImages.push({ url: item.url, source: item.source });
+			}
+		}
+		this.discardedImages = discardedImages;
 
 		this.snapshot = { homes, scannedAt: Date.now() };
 		this.emit();
@@ -409,22 +519,40 @@ export class HomeController {
 		}
 
 		// 先给诊断盖章、再记收尾日志：保证「索引完成」在时间倒序里排在本次诊断之上
-		this.stampDiagnostics(result);
+		this.stampFirstSeen(result);
 		this.logRuntime(`索引完成 | 共索引 ${paths.length} 个 .gnd`);
 		return { items: result, scanned: paths.length };
 	}
 
 	/**
-	 * 给一批诊断盖章：批内按收集顺序递增，整批晚于此前所有条目。
+	 * 给一批诊断盖章——**按「首次出现」保留序号**：
+	 *
+	 * 同一问题（级别 + 错误码 + 路径）跨扫描沿用**首次出现**时的序号，
+	 * 在解析日志区块（时间正序）里保持老位置；新问题、或消失后复发的问题盖新章沉底。
+	 * 本次未再出现的问题移除登记（复发即视为新事件）。
 	 *
 	 * core 层的纯函数不关心序号，序号由 controller 统一分配。
 	 */
-	private stampDiagnostics(items: Diagnostic[]): void {
-		for (const item of items) item.seq = (this.seqCounter += 1);
+	private stampFirstSeen(items: Diagnostic[]): Diagnostic[] {
+		const current = new Set<string>();
+		for (const item of items) {
+			const key = `${item.level}|${item.code}|${item.path}`;
+			current.add(key);
+			let seq = this.diagnosticFirstSeen.get(key);
+			if (seq === undefined) {
+				seq = this.seqCounter += 1;
+				this.diagnosticFirstSeen.set(key, seq);
+			}
+			item.seq = seq;
+		}
+		for (const key of [...this.diagnosticFirstSeen.keys()]) {
+			if (!current.has(key)) this.diagnosticFirstSeen.delete(key);
+		}
+		return items;
 	}
 
 	/**
-	 * 诊断单个 `.gnd` 文件：文本级规则 + page 封面 + home 的跨文件校验（导入目标、WHERE 字段）。
+	 * 诊断单个 `.gnd` 文件：文本级规则 + project 封面 + home 的跨文件校验（导入目标、WHERE 字段）。
 	 *
 	 * 结果追加进 `sink`；非 home 文件只跑文本级规则与封面检查。
 	 */
@@ -455,9 +583,9 @@ export class HomeController {
 	}
 
 	/**
-	 * 诊断 page 的 `gnd_image` 封面：路径非法或图片不存在都记一条 warning。
+	 * 诊断 project 的 `gnd_image` 封面：路径非法或图片不存在都记一条 warning。
 	 *
-	 * 只对 page 生效（`gnd_image` 仅 page 有意义，写在其它类型里一律忽略且不报错）。
+	 * 只对 project 生效（`gnd_image` 仅 project 有意义，写在其它类型里一律忽略且不报错）。
 	 * 出问题不影响看板渲染——ui 仍会把封面退回空槽，这里只是把它提示出来。
 	 */
 	private async diagnoseCover(
@@ -465,14 +593,30 @@ export class HomeController {
 		frontmatter: GndFrontmatter,
 		sink: Diagnostic[],
 	): Promise<void> {
-		if (frontmatter.gndType !== "page") return;
+		if (frontmatter.gndType !== "project") return;
 		const raw = frontmatter.gndImage;
 		if (raw === null) return;
+		// 网络封面：流水线失败明细（下载 / 校验 / 解析 / 写盘）以 error 出诊断，挂在声明封面的 project 上
+		if (isHttpUrl(raw)) {
+			const issue = this.coverIssues.get(`${path}
+${raw}`);
+			if (issue === undefined) return;
+			sink.push({
+				level: "error",
+				code: issue.code,
+				path,
+				message: issue.message,
+				detail: issue.detail,
+				line: null,
+				target: raw,
+			});
+			return;
+		}
 
 		const image = normalizeAssetPath(raw);
 		if (image === null) {
 			sink.push({
-				level: "warning",
+				level: "error",
 				code: "COVER_PATH_INVALID",
 				path,
 				message: "封面路径非法",
@@ -486,7 +630,7 @@ export class HomeController {
 		const stat = await this.host.dataSource.stat(image);
 		if (stat.exists) return;
 		sink.push({
-			level: "warning",
+			level: "error",
 			code: "COVER_IMAGE_MISSING",
 			path,
 			message: "封面图片不存在",
@@ -534,9 +678,9 @@ export class HomeController {
 	}
 
 	/**
-	 * 解析 `**SELECT**` 导入的作品文档（仅接受 page 类型）。
+	 * 解析 `**SELECT**` 导入的作品文档（仅接受 project 类型）。
 	 *
-	 * 传入 `sink` 时把跨文件问题（目标不存在、目标不是 page）一并写入诊断。
+	 * 传入 `sink` 时把跨文件问题（目标不存在、目标不是 project）一并写入诊断。
 	 */
 	private async readWorks(
 		fromPath: string,
@@ -564,13 +708,13 @@ export class HomeController {
 
 			const text = (await this.host.dataSource.read(target)) ?? "";
 			const { frontmatter, body } = splitFrontmatter(text);
-			if (frontmatter.gndType !== "page") {
+			if (frontmatter.gndType !== "project") {
 				sink?.push({
 					level: "warning",
 					code: "IMPORT_TARGET_TYPE",
 					path: fromPath,
 					message: "导入类型错误",
-					detail: `导入路径必须指向 page 类型：${raw}（实际为 ${frontmatter.gndType ?? "未声明"}）`,
+					detail: `导入路径必须指向 project 类型：${raw}（实际为 ${frontmatter.gndType ?? "未声明"}）`,
 					line: null,
 					target,
 				});
@@ -581,28 +725,100 @@ export class HomeController {
 				filePath: target,
 				title: stripExtension(basename(target)),
 				variables: parseVariables(body),
-				...this.resolveCover(frontmatter.gndImage),
+				...(await this.resolveCover(frontmatter.gndImage, target)),
 			});
 		}
 		return works;
 	}
 
 	/**
-	 * 解析 page 的 `gnd_image` 封面：归一化 → 交给宿主换算资源地址。
+	 * 解析 project 的 `gnd_image` 封面。
 	 *
-	 * 这里只负责「能渲染就给出地址」；路径非法或图片不存在由 `diagnoseCover()`
-	 * 单独出 warning 诊断，不在本方法里报——渲染与诊断各管一段。
+	 * 本地路径：归一化 → 交给宿主换算资源地址。
+	 * http/https：查 `imageCache` 记录（URL 为键），有记录且缓存文件在 → 直接用本地缓存；
+	 * 否则走五步流水线：下载 → 魔数校验 → 解码重绘 → 摘要 → 落盘写记录。
+	 * 任何失败都退回无封面（渲染空槽），不中断看板；失败详情记入 `coverIssues`，
+	 * 由 `diagnoseCover()` 以 **error** 级别出诊断（封面组统一 error）。
 	 */
-	private resolveCover(raw: string | null): Pick<WorkDocEntry, "image" | "imageUrl"> {
-		const image = raw === null ? null : normalizeAssetPath(raw);
-		if (image === null) return { image: null, imageUrl: null };
-		return { image, imageUrl: this.host.dataSource.resolveResource(image) };
+	private async resolveCover(
+		raw: string | null,
+		sourcePath: string,
+	): Promise<Pick<WorkDocEntry, "image" | "imageUrl" | "remoteUrl">> {
+		if (raw === null) return { image: null, imageUrl: null, remoteUrl: null };
+		if (isHttpUrl(raw)) return this.resolveRemoteCover(raw, sourcePath);
+		const image = normalizeAssetPath(raw);
+		if (image === null) return { image: null, imageUrl: null, remoteUrl: null };
+		return { image, imageUrl: this.host.dataSource.resolveResource(image), remoteUrl: null };
 	}
 
-	/** 记一条运行日志（系统行）；**最新在最上**，超出上限丢最旧的 */
+	/** 网络封面：缓存优先，未命中则「下载 → 校验 → 重绘 → 摘要 → 落盘」五步流水线 */
+	private async resolveRemoteCover(
+		url: string,
+		sourcePath: string,
+	): Promise<Pick<WorkDocEntry, "image" | "imageUrl" | "remoteUrl">> {
+		const items = this.settings.imageCache.items;
+		const record = items.find((item) => item.url === url);
+		if (record !== undefined && (await this.host.imageCache.exists(record.local))) {
+			return {
+				image: record.local,
+				imageUrl: this.host.dataSource.resolveResource(record.local),
+				remoteUrl: url,
+			};
+		}
+
+		const fail = (code: CoverFailureCode, message: string, detail: string): Pick<WorkDocEntry, "image" | "imageUrl" | "remoteUrl"> => {
+			this.coverIssues.set(`${sourcePath}\n${url}`, { code, message, detail, url, source: sourcePath });
+			return { image: null, imageUrl: null, remoteUrl: url };
+		};
+
+		// 1. 下载（requestUrl，不受 CORS 限制）
+		const response = await this.host.imageCache.fetch(url);
+		if (response.bytes === null || response.status < 200 || response.status >= 300) {
+			if (response.status === 404) {
+				return fail("COVER_NOT_FOUND", "封面链接不存在", `封面链接 404：${url}`);
+			}
+			return fail(
+				"COVER_DOWNLOAD_FAILED",
+				"封面下载失败",
+				`封面下载失败（请求异常、超时或非 200）：${url}（HTTP ${response.status}）`,
+			);
+		}
+
+		// 2. 魔数校验（PNG / JPEG / GIF / WebP）
+		const type = detectImageType(response.bytes);
+		if (type === null) {
+			return fail("COVER_INVALID_TYPE", "封面类型非法", `封面不是受支持的图片格式（魔数校验失败）：${url}`);
+		}
+
+		// 3. 解码重绘（decode 验证数据流完整性；Canvas 重绘剥离非像素数据）
+		const redrawn = await this.host.imageCache.decodeAndRedraw(response.bytes, imageMimeType(type));
+		if (redrawn === null) {
+			return fail("COVER_PARSE_FAILED", "封面解析失败", `封面解码或重绘失败：${url}`);
+		}
+
+		// 4. 摘要（SHA-256 前 16 位，subtle 不可用时退回纯 JS 实现）
+		const hash = await this.host.imageCache.sha256Hex16(redrawn);
+		if (hash === null) {
+			return fail("COVER_WRITE_FAILED", "封面写盘失败", `封面缓存摘要计算失败：${url}`);
+		}
+
+		// 5. 落盘 + 写记录
+		const relPath = `${IMAGE_CACHE_DIR}/${hash}.png`;
+		if (!(await this.host.imageCache.write(relPath, redrawn))) {
+			return fail("COVER_WRITE_FAILED", "封面写盘失败", `封面缓存写盘失败：${relPath}`);
+		}
+		this.coverIssues.delete(`${sourcePath}\n${url}`);
+		const nextItems = items.filter((item) => item.url !== url);
+		nextItems.push({ url, hash, local: relPath, source: sourcePath, updated: new Date().toISOString() });
+		this.settings.imageCache = { kind: "image-cache", items: nextItems };
+		this.persist();
+		return { image: relPath, imageUrl: this.host.dataSource.resolveResource(relPath), remoteUrl: url };
+	}
+
+	/** 记一条运行日志（系统行）；**追加在尾部（时间正序，最新在最下）**，超出上限丢最旧的 */
 	private logRuntime(message: string): void {
 		if (!this.settings.debugEnabled) return;
-		this.runtimeLog.unshift({
+		this.runtimeLog.push({
 			level: "info",
 			code: "LOG",
 			path: "",
@@ -613,7 +829,7 @@ export class HomeController {
 			seq: (this.seqCounter += 1),
 		});
 		if (this.runtimeLog.length > RUNTIME_LOG_LIMIT) {
-			this.runtimeLog.length = RUNTIME_LOG_LIMIT;
+			this.runtimeLog.splice(0, this.runtimeLog.length - RUNTIME_LOG_LIMIT);
 		}
 	}
 

@@ -72,12 +72,17 @@ export function renderDebugPanel(
 	]);
 }
 
-/** 日志区内容：诊断聚合行在前（时间倒序），运行日志在后（最新在顶）；都为空则占位提示 */
+/** 日志区内容：运行日志区块置顶（时间正序）→ 分隔线 → 解析日志区块（时间正序）；都为空则占位提示 */
 function buildLogBody(env: DomEnv, vm: DebugPanelViewModel): HTMLElement[] {
 	if (vm.rows.length === 0 && vm.logs.length === 0) {
 		return [el(env, "div", { cls: "gn-debug-empty", text: vm.refreshing ? REFRESHING_HINT : EMPTY_HINT })];
 	}
-	return [...vm.rows.map((row) => buildRow(env, row)), ...vm.logs.map((row) => buildRow(env, row))];
+	const body: HTMLElement[] = [...vm.logs.map((row) => buildRow(env, row))];
+	if (vm.logs.length > 0 && vm.rows.length > 0) {
+		body.push(el(env, "div", { cls: "gn-debug-divider" }));
+	}
+	body.push(...vm.rows.map((row) => buildRow(env, row)));
+	return body;
 }
 
 /** 单行：`[级别] 来源 ‥‥ 条数`；系统行无点线与计数（来源占满整行） */

@@ -48,7 +48,7 @@ export function resolveImportPath(fromPath: string, importPath: string): string 
 }
 
 /**
- * 归一化封面图片路径（page 的 `gnd_image`）。
+ * 归一化封面图片路径（project 的 `gnd_image`）。
  *
  * 规则：相对 vault 根的**库内路径**（写 `assets/cover.png`，不写 vault 名）、
  * 以 `/` 分隔、禁止 `..`、禁止盘符绝对路径；前导 `/` 视作 vault 根一并接受。
@@ -61,4 +61,9 @@ export function normalizeAssetPath(raw: string): string | null {
 	if (/^[A-Za-z]:/.test(value)) return null;
 	const normalized = normalizePath(value);
 	return normalized.length === 0 ? null : normalized;
+}
+
+/** 是否为网络图片地址（`gnd_image` 的 http/https 分流） */
+export function isHttpUrl(raw: string): boolean {
+	return /^https?:\/\/\S+/i.test(raw.trim());
 }

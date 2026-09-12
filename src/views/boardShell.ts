@@ -1,5 +1,6 @@
 import { ItemView, type App, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
 import type { HomeController } from "../controller";
+import { ImageCleanModal } from "../host";
 import { basename, stripExtension } from "../core";
 import { buildHomeBoardViewModel } from "../render";
 import { BOARD_VIEW_TYPE } from "../types";
@@ -13,6 +14,8 @@ import { renderHomeBoard } from "../ui";
  */
 export class BoardShellView extends ItemView {
 	private filePath: string | null = null;
+	/** 搜索关键字：渲染期状态，不落盘 */
+	private searchText = "";
 	private unsubscribe: (() => void) | null = null;
 
 	constructor(
@@ -67,8 +70,43 @@ export class BoardShellView extends ItemView {
 			this.controller.getSnapshot(),
 			path,
 			settings.projectColors,
+			this.controller.getDiscardedImages(),
 		);
-		renderHomeBoard({ document: this.contentEl.ownerDocument }, this.contentEl, viewModel);
+		renderHomeBoard(
+			{ document: this.contentEl.ownerDocument },
+			this.contentEl,
+			viewModel,
+			{
+				onSearch: (query) => {
+					this.searchText = query;
+					this.render();
+				},
+				onClearSearch: () => {
+					this.searchText = "";
+					this.render();
+				},
+				onCleanImages: () => this.cleanImages(),
+			},
+			this.searchText,
+		);
+	}
+
+	/** 清理：弹窗列出「图片废弃区」记录，确认后只清 data.json 记录（图片文件不动） */
+	private cleanImages(): void {
+		const records = this.controller.getDiscardedImages();
+		if (records.length === 0) {
+			this.controller.notify("没有可清理的图片缓存记录");
+			return;
+		}
+		const modal = new ImageCleanModal(this.app, records, (urls) => {
+			void this.applyImageClean(urls);
+		});
+		modal.open();
+	}
+
+	private async applyImageClean(urls: string[]): Promise<void> {
+		const removed = await this.controller.removeImageCache(urls);
+		if (removed > 0) this.controller.notify(`已清理 ${removed} 条失效图片（记录与缓存文件已删除）`);
 	}
 }
 

@@ -1,15 +1,22 @@
 import { findHome } from "../core";
-import type { GndBoardModel, GndWorkCard, HomeControllerSnapshot, HomeDocSnapshot } from "../types";
+import type {
+	BoardDiscardedImage,
+	GndBoardModel,
+	GndWorkCard,
+	HomeControllerSnapshot,
+	HomeDocSnapshot,
+} from "../types";
 
 /**
  * 构建小说项目主页（看板）视图模型。
  *
- * 纯格式化：把主页快照 + `**WHERE**` 字段映射为欢迎词与作品卡片。
+ * 纯格式化：把主页快照 + `**WHERE**` 字段映射为欢迎词、作品卡片与图片废弃区。
  */
 export function buildHomeBoardViewModel(
 	snapshot: HomeControllerSnapshot,
 	filePath: string,
 	projectColors: Readonly<Record<string, string>> = {},
+	discardedImages: readonly BoardDiscardedImage[] = [],
 ): GndBoardModel {
 	const home = findHome(snapshot, filePath);
 	if (home === null) {
@@ -18,6 +25,7 @@ export function buildHomeBoardViewModel(
 			welcome: null,
 			cards: [],
 			notice: "该主页尚未在「主页管理」中完成解析。",
+			discardedImages: [...discardedImages],
 		};
 	}
 	if (home.status === "missing") {
@@ -26,6 +34,7 @@ export function buildHomeBoardViewModel(
 			welcome: null,
 			cards: [],
 			notice: "主页文件不存在，请检查后再试。",
+			discardedImages: [...discardedImages],
 		};
 	}
 	if (home.status === "invalid") {
@@ -35,6 +44,7 @@ export function buildHomeBoardViewModel(
 			welcome: null,
 			cards: [],
 			notice: `gnd_type 为「${type}」，仅 home 类型渲染看板。`,
+			discardedImages: [...discardedImages],
 		};
 	}
 	return {
@@ -42,13 +52,14 @@ export function buildHomeBoardViewModel(
 		welcome: home.welcome,
 		cards: buildCards(home, projectColors),
 		notice: "",
+		discardedImages: [...discardedImages],
 	};
 }
 
 /**
  * 按 `**WHERE**` 字段顺序取每条作品的值，空值整行不出现。
  *
- * 封面来自 page 的 `gnd_image`（由 controller 解析成宿主资源地址），未声明则为 null。
+ * 封面来自 project 的 `gnd_image`（由 controller 解析成宿主资源地址），未声明则为 null。
  */
 function buildCards(home: HomeDocSnapshot, projectColors: Readonly<Record<string, string>>): GndWorkCard[] {
 	return home.works.map((work) => {

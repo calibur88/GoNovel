@@ -1,8 +1,38 @@
 # 更新日志
 
-> 本文是 GoNovel 项目的版本演进权威记录。当前文档版本：0.5.0（与工程主版本号同步）。
+> 本文是 GoNovel 项目的版本演进权威记录。当前文档版本：0.6.0（与工程主版本号同步）。
 > 版本按迭代顺序倒序排列（最新在最上），编写规范见 CONTRIBUTING.md §6。
 > 0.1.0~0.4.0 为「开发版」（开发阶段的功能组合记录）；正式推送时再取消未推送标记、补写日期。
+
+## [0.6.0] - 2026-09-13
+
+### 主工程（插件更新）
+
+**看板封面布局改版**
+- **卡片**：网格等宽、行内等高（封面槽位与标题区高度固定，网格拉伸对齐）。
+- **槽位**：高度固定 240px，宽度由封面图片按自身比例撑出（`fit-content`），在卡片内水平居中；槽位两侧露出的是**卡片背景色**，不是图片内部留白。
+- **图片**：高度撑满槽位、宽度按自身比例——填满、不裁切、不拉伸；缩放完全交给 CSS（`height: 100% + width: auto`），无 JS 测量、无监听。
+- **封面槽位缩放方案沿革**：曾先后试过「JS 测量槽位 + ResizeObserver 重算」（缓存命中 `load` 不触发、`Math.floor` 1px 缝隙、监听器清理责任三坑）与「`object-fit: contain` + max 约束」，最终收敛为定高 + 比例宽度方案。
+
+**网络封面图片支持（`gnd_image` 接受 http/https）**
+- **下载**：`requestUrl` 取 `ArrayBuffer`，不受 CORS 限制。
+- **校验**：`detectImageType` 魔数（读前 12 字节，PNG / JPEG / GIF / WebP，零依赖）→ 失败记 `COVER_INVALID_TYPE`；`<img>.decode()` 验证数据流 → 失败记 `COVER_PARSE_FAILED`；Canvas 重绘（Blob → img → canvas → `toBlob("image/png")`，剥离全部非像素数据，等效重新编码；try/finally 保证 `revokeObjectURL`）→ 失败记 `COVER_PARSE_FAILED`。
+- **存储**：重绘后的 PNG 字节写入 `.gn-data/image/${hash}.png`，`hash` = SHA-256 前 16 位（`crypto.subtle.digest`；移动端不可用时退回纯 JS SHA-256，纯 JS 同步阻塞故排入 `requestIdleCallback` 空闲时段执行）。`.gn-data/` 已加入 `.gitignore`。
+- **记录**：`data.json` 新增 `imageCache` 仓库——`{ kind: "image-cache", items: [{ url, hash, local, source, updated }] }`，`source` 为声明封面的 project 路径，用于图片废弃区自动识别。缓存命中且文件在 → 不再联网；缓存文件被手删 → 自动重新下载。
+- **诊断**：封面组统一 **error**（`DiagnosticLevel` 注释同步）——`COVER_DOWNLOAD_FAILED`（请求失败 / 非 200 / 超时）、`COVER_NOT_FOUND`（404）、`COVER_INVALID_TYPE`、`COVER_PARSE_FAILED`、`COVER_WRITE_FAILED`，加上既有的 `COVER_PATH_INVALID` / `COVER_IMAGE_MISSING`（原 warning 升 error）。任何失败退回空槽，不中断看板渲染；verify-core 等级策略建表同步（新增 8 项断言，共 167 项）。
+- **图片废弃区**（语义定稿）：**只由 `data.json` 的缓存记录驱动**（实时下载失败不建卡，只出诊断与空槽）——记录失效 = 来源文档被删 / 文档已导入但改了链接（孤儿记录）/ URL 未变但加载失败；文档存在但未被导入的记录默认忽略。条目带 `⚠ 找不到图片` 角标。
+- **看板「清理」按钮一次完成四件事**：① 删除 `data.json` 里对应记录；② 删除磁盘上的缓存图片文件（`.gn-data/image/`，缓存是一次性产物，直接删不进回收站）；③ 移除废弃区对应卡片（记录删了就不会复现）；④ 关联文档仍存在且其声明的网络封面仍失效时，提示「图片路径无效：<文档>（请修正 gnd_image）」。
+- **调试日志区块重构**：日志合回**单一滚动容器**——**运行日志区块固定置顶**（应用启动、运行状态），**解析日志（info / warning / error）排在下方**（分隔线隔开、不吸顶），两个区块各自独立按**时间正序**（最早在顶、最新在底），互不交叉。
+- **诊断「首次出现」盖章**：同一问题（级别 + 错误码 + 路径）跨扫描沿用**首次出现**的序号，在解析日志区块里保持老位置；新问题、或消失后复发的问题盖新章**沉底**（消失即移除登记，复发视为新事件）——反复扫描不会把老问题洗到顶。
+- **网络封面样例**：demo 新增 `网络封面/`（`主页.gnd` + 作品 `远山`，`gnd_image` 指向 `https://picsum.photos/seed/gonovel/500/750`）——默认不登记，要验证效果在管理视图登记 `网络封面/主页.gnd` 即可。
+- **无兼容代码**：非正式版、无迁移——`imageCache` 只认 `{ kind: "image-cache", items }` 当前形态，旧形态数据直接丢弃重建。
+
+**移除旧版兼容代码**
+- 删除 `LegacyColorSettings` 与 `cardColors` / `workColors` → `homeColors` / `projectColors` 的迁移分支（`pickColorMap` 一并移除）：`data.json` 只认当前字段，未知字段读入即丢弃、不落盘，配色由扫描按调色板重新分配。非正式版，无迁移。
+
+**兼容性**：`data.json` 新增 `imageCache`、移除旧字段迁移——旧版 `cardColors` / `workColors` 数据升级到 0.6.0 后**不再迁移**（配色会按调色板重新分配，登记与文件不受影响）；`.gnd` 语法不变（`gnd_image` 取值新增接受 http/https）；清理图片记录不影响已缓存的图片文件。
+
+**测试情况**：`tsc -noEmit -skipLibCheck` 零错误；`node scripts/demo.mjs --check` 通过；`scripts/verify-core.ts` 共 167 项断言、15 节全通过。
 
 ## [0.5.0] - 2026-09-12
 
@@ -22,11 +52,20 @@
 **资源更新**
 - 根 `assets/cover/` 5 张示例封面按 `颜色(英文)-比例-分辨率.png` 重命名（Vermilion / Orange / Emerald / Cyan / Indigo）；用户个人定制封面 `assets/.cover/`（含自定义色）一并随仓库上传；`demo.mjs` 的 `IMAGES`、各 `.gnd` 的 `gnd_image` 引用、verify-core 封面断言同步更新。
 
+**管理视图改版 + 「删除」→「废弃」**
+- **布局重排**：管理视图改为「固定头部 + 可滚动主体」——头部 = 标题 → 分隔线 → 管理语 → 分隔线 → 操作行（左：四按钮**刷新 / 清理 / 登记 / 废弃**，右：搜索栏，左右分布）；主体分「已登记」「已废弃」两块，各为「标签 + 分隔线 + 卡片网格」，超出滚动，重渲前后保持滚动位置。
+- **搜索改过滤式**：搜索栏（输入框 + 搜索 + 清空）移到头部操作行右端；搜索后**只显示命中的卡片、未命中隐藏**（「已登记」「已废弃」两块都生效），无命中显示占位提示；移除原「高亮边框」方案（`gn-card--match` 逻辑与样式已清理）。大小写不敏感子串匹配路径；「清空」恢复完整列表。渲染期状态 `HomeManagerState { discardMode, searchText }` 存视图壳、不落盘。
+- **看板搜索**：看板（小说项目主页）欢迎语下方新增搜索行（输入框 + 搜索 + 清空，靠左），功能与管理视图一致——只显示命中的作品卡；**匹配范围 = 标题 + 自定义字段的键／值**（不匹配路径），未命中隐藏；搜索关键字存看板视图壳、不落盘。
+- **看板封面缩放**：封面图在封面槽位（可渲染范围）内**等比缩放、居中完整显示**，不再固定高度裁切。缩放交给 CSS（`max-width / max-height + object-fit: contain`），由浏览器按槽位范围自动计算——无 JS 测量、无 load 监听、无 ResizeObserver，天然规避缓存命中时 `load` 不触发、取整 1px 误差与监听器清理三类问题。
+- **`.gnd` 语法变更：`gnd_type` 取值调整**——`page` 更名 **`project`**（作品档案：只放元数据变量与封面，不放正文），移除 **`cache`**，保留 `home` / `data`；同目录唯一性约束、`gnd_image` 封面挂载、`**SELECT**` 导入目标校验同步跟进（导入目标须为 `project`，诊断文案同步更新）。旧 `gnd_type: page` 的文档需手动改为 `project`。
+- **「删除」改「废弃」（不再删文件）**：`data.json` 新增 `discardedPaths`，与 `homePaths` 互斥、重新登记自动移出（要恢复重新登记即可）；`controller.deleteHome()` 换为 `discardHome()`；卡片 ✕ 只在「废弃模式」下出现，废弃卡灰显、无任何动作。
+- **「清理」弹窗重建**：`host/cleanModal.ts`（取代 `cleanMissingModal.ts`）分两块勾选「已废弃」「已丢失的主页」，默认全勾，确认后**只清 `data.json` 记录、不删任何文件**。
+
 **已知问题（本轮不修）**：O-3 `reload()` 未串行化；O-12 设置面板订阅不注销。
 
-**兼容性**：兼容（纯内部健壮性与清理：`data.json` 结构、`.gnd` 语法、视图行为均未变，外部无需做任何事）。
+**兼容性**：`.gnd` 语法**本版有变更**——`gnd_type` 的 `page` 更名 `project`、`cache` 移除，旧文档需手动改 frontmatter（其余语法不变）；`data.json` 层面兼容（`discardedPaths` 为向后兼容新增字段，旧 `data.json` 缺该字段时回退空数组；旧字段 `cardColors` / `workColors` 自动迁移）；「废弃」取代原「删除」，插件不再提供任何删除文件的入口。
 
-**测试情况**：`tsc -noEmit -skipLibCheck` 零错误；`node scripts/demo.mjs --check` 通过；`scripts/verify-core.ts` 共 144 项断言全通过。
+**测试情况**：`tsc -noEmit -skipLibCheck` 零错误；`node scripts/demo.mjs --check` 通过；`scripts/verify-core.ts` 共 159 项断言、15 节全通过。
 
 ---
 

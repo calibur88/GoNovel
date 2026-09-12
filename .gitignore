@@ -17,6 +17,9 @@ demo/assets/
 .obsidian/
 data.json
 
+# 插件网络封面缓存（运行期产物，不入库）
+.gn-data/
+
 # 本地参考项目(不入库)
 obsidian-webnovel-assistant/
 
@@ -25,6 +28,9 @@ test-local/
 
 # 后续迭代方案记录稿(草案，不入库)
 PLAN.md
+
+# AI 交接上下文(工作文档，不入库)
+context.md
 
 # OS
 .DS_Store

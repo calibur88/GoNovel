@@ -7,4 +7,4 @@ gnd_created: 2026-09-12
 九心
 
 [简介]
-故意写成 home：被导入时预期 [warning] 导入路径必须指向 page 类型
+故意写成 home：被导入时预期 [warning] 导入路径必须指向 project 类型

@@ -1,6 +1,6 @@
 import { ItemView, type App, type WorkspaceLeaf } from "obsidian";
 import type { HomeController } from "../controller";
-import { CleanMissingModal, GndFileSuggestModal } from "../host";
+import { CleanModal, GndFileSuggestModal } from "../host";
 import { buildHomeManagerViewModel } from "../render";
 import { MANAGER_TITLE, MANAGER_VIEW_TYPE, RIBBON_ICON } from "../types";
 import { renderHomeManager } from "../ui";
@@ -10,11 +10,12 @@ import { openBoardView } from "./boardShell";
  * 主页管理视图壳（`gonovel-manager`）。
  *
  * 只做「读快照 → 构建 ViewModel → 交给 ui 渲染」与交互转发，不含业务逻辑。
- * 顶部标题固定为 `MANAGER_TITLE`，隔离条展示可定制的管理语。
+ * 头部固定（标题／管理语／四按钮），主体可滚动（已登记 + 已废弃）。
  */
 export class ManagerShellView extends ItemView {
 	private unsubscribe: (() => void) | null = null;
-	private deleteMode = false;
+	private discardMode = false;
+	private searchText = "";
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -51,6 +52,7 @@ export class ManagerShellView extends ItemView {
 			this.controller.getSnapshot(),
 			settings.managerNote,
 			settings.homeColors,
+			settings.discardedPaths,
 		);
 		renderHomeManager(
 			{ document: this.contentEl.ownerDocument },
@@ -61,13 +63,21 @@ export class ManagerShellView extends ItemView {
 				onRefresh: () => void this.refresh(),
 				onClean: () => this.clean(),
 				onAdd: () => this.add(),
-				onToggleDelete: () => {
-					this.deleteMode = !this.deleteMode;
+				onToggleDiscard: () => {
+					this.discardMode = !this.discardMode;
 					this.render();
 				},
-				onDeleteCard: (filePath) => void this.controller.deleteHome(filePath),
+				onDiscardCard: (filePath) => void this.controller.discardHome(filePath),
+				onSearch: (query) => {
+					this.searchText = query;
+					this.render();
+				},
+				onClearSearch: () => {
+					this.searchText = "";
+					this.render();
+				},
 			},
-			{ deleteMode: this.deleteMode },
+			{ discardMode: this.discardMode, searchText: this.searchText },
 		);
 	}
 
@@ -104,19 +114,25 @@ export class ManagerShellView extends ItemView {
 		if (!added) this.controller.notify("该路径已登记");
 	}
 
-	/** 清理：两步确认后批量移除已丢失记录 */
+	/** 清理：弹窗列出「已废弃」与「已丢失的主页」，确认后只清 data.json 记录（不删文件） */
 	private clean(): void {
+		const discarded = this.controller.getDiscardedPaths();
 		const missing = this.controller.getMissingPaths();
-		if (missing.length === 0) {
-			this.controller.notify("没有已丢失的主页记录");
+		if (discarded.length === 0 && missing.length === 0) {
+			this.controller.notify("没有可清理的记录");
 			return;
 		}
-		const modal = new CleanMissingModal(this.app, missing, (selected) => {
-			void this.controller.removeHomes(selected).then((removed) => {
-				if (removed > 0) this.controller.notify(`已清理 ${removed} 条丢失记录`);
-			});
+		const modal = new CleanModal(this.app, discarded, missing, (selection) => {
+			void this.applyClean(selection.discarded, selection.missing);
 		});
 		modal.open();
+	}
+
+	private async applyClean(discarded: string[], missing: string[]): Promise<void> {
+		const removedDiscard = await this.controller.removeDiscarded(discarded);
+		const removedMissing = await this.controller.removeHomes(missing);
+		const total = removedDiscard + removedMissing;
+		if (total > 0) this.controller.notify(`已清理 ${total} 条记录（未删除任何文件）`);
 	}
 }
 

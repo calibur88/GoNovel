@@ -12,19 +12,35 @@
 	line-height: 1.8;
 }
 
+/* 分区内的空占位：不撑高，避免「已废弃」区被拉出一大段留白 */
+.gn-empty--inline {
+	padding: 12px 4px;
+	text-align: left;
+	font-size: 0.9em;
+}
+
 /* -------------------------- 主页管理视图 -------------------------- */
 
+/*
+ * 布局：固定头部 + 可滚动主体
+ *   .gn-manager-header  标题 → 管理语 → 操作行：四按钮居左、搜索栏居右（不随内容滚动）
+ *   .gn-manager-body    已登记分区 + 已废弃分区（超出滚动）
+ */
 .gn-manager {
 	display: flex;
 	flex-direction: column;
-	gap: 16px;
 	height: 100%;
 	padding: 24px;
 }
 
-/* 顶部标题：固定文案，不随内容滚动 */
-.gn-manager-title {
+.gn-manager-header {
 	flex: none;
+	display: flex;
+	flex-direction: column;
+}
+
+/* 标题：分隔线收在标题下方 */
+.gn-manager-title {
 	padding-bottom: 12px;
 	border-bottom: 1px solid var(--background-modifier-border);
 	font-size: 1.5em;
@@ -32,9 +48,8 @@
 	text-align: center;
 }
 
-/* 隔离条：管理语，可定制 */
+/* 管理语：与标题、按钮之间各有一条分隔线 */
 .gn-manager-note {
-	flex: none;
 	padding: 10px 12px;
 	border-bottom: 1px solid var(--background-modifier-border);
 	text-align: center;
@@ -51,26 +66,83 @@
 	font-size: 0.85em;
 }
 
-/* 卡片网格：撑满剩余高度，超出滚动 */
-.gn-card-grid {
+/* 操作行：左四按钮（刷新 / 清理 / 登记 / 废弃）、右搜索栏，左右分布 */
+.gn-manager-actions {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	flex-wrap: wrap;
+	padding: 14px 0 2px;
+}
+
+.gn-manager-actions-buttons {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+
+/* 可滚动主体：头部固定在视口内，卡片区在此滚动 */
+.gn-manager-body {
 	flex: 1 1 auto;
 	min-height: 0;
+	overflow: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 24px;
+	padding-top: 18px;
+}
+
+/* 分区：标签行 → 分隔线 → 网格 */
+.gn-section {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.gn-section-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+
+.gn-section-label {
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.gn-section-divider {
+	height: 1px;
+	background-color: var(--background-modifier-border);
+}
+
+/* 搜索栏：输入框 + 搜索 + 清空 */
+.gn-search {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.gn-search-input {
+	min-width: 200px;
+}
+
+.gn-search-btn {
+	flex: none;
+}
+
+/* 卡片网格：由外层主体滚动，网格自身不再滚动 */
+.gn-card-grid {
 	display: grid;
 	grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
 	gap: 16px;
 	align-content: start;
-	overflow: auto;
-	padding: 4px;
 }
 
-/* 底部按钮栏：钉底，不随卡片滚动 */
-.gn-manager-actions {
-	flex: none;
-	display: flex;
-	justify-content: center;
-	gap: 12px;
-	padding-top: 12px;
-	border-top: 1px solid var(--background-modifier-border);
+.gn-section--discarded .gn-card-grid {
+	grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
 }
 
 .gn-card {
@@ -119,6 +191,15 @@
 	opacity: 0.7;
 }
 
+/* 已废弃卡片：只展示路径，不可点击、无任何动作 */
+.gn-card--discarded {
+	border-style: dashed;
+	background-color: var(--background-secondary);
+	color: var(--text-faint);
+	opacity: 0.75;
+	padding: 14px 16px;
+}
+
 .gn-card-badge {
 	position: absolute;
 	top: 8px;
@@ -127,8 +208,8 @@
 	color: var(--text-warning);
 }
 
-/* 删除模式下角标左移，给 ✕ 让位 */
-.gn-card--deleting .gn-card-badge {
+/* 废弃模式下角标左移，给 ✕ 让位 */
+.gn-card--discarding .gn-card-badge {
 	right: auto;
 	left: 12px;
 }
@@ -179,8 +260,15 @@
 	line-height: 1.6;
 }
 
+/* 分区标题：已废弃（n） / 已丢失的主页（n） */
+.gn-modal-section {
+	margin: 12px 0 6px;
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
 .gn-modal-list {
-	max-height: 320px;
+	max-height: 240px;
 	overflow: auto;
 	padding: 8px;
 	border: 1px solid var(--background-modifier-border);
@@ -229,6 +317,11 @@
 	font-family: var(--font-monospace);
 	font-size: 0.8em;
 	line-height: 1.7;
+}
+
+.gn-debug-divider {
+	border-top: 1px solid var(--background-modifier-border);
+	margin: 6px 0;
 }
 
 .gn-debug-empty {
@@ -321,6 +414,62 @@
 	text-align: center;
 }
 
+/* 工具行：搜索组靠左、「清理」靠右 */
+.gn-board-toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+
+/* 图片废弃区：来源 .gnd 已丢失的网络封面缓存记录（仅展示，无动作） */
+.gn-image-discarded-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+	gap: 12px;
+}
+
+.gn-image-discarded-card {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 10px 12px;
+	border: 1px dashed var(--background-modifier-border);
+	border-radius: 6px;
+	background-color: var(--background-secondary);
+	font-size: 0.85em;
+}
+
+.gn-image-discarded-warn {
+	color: var(--text-warning);
+	font-size: 0.9em;
+}
+
+.gn-image-discarded-source {
+	color: var(--text-muted);
+	font-weight: 600;
+	word-break: break-all;
+}
+
+.gn-image-discarded-url {
+	color: var(--text-faint);
+	font-family: var(--font-monospace);
+	font-size: 0.9em;
+	word-break: break-all;
+}
+
+/* 看板搜索行：欢迎语下方，输入框 + 搜索，靠左 */
+.gn-board-search {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.gn-board-search .gn-search-input {
+	min-width: 260px;
+}
+
 .gn-work-grid {
 	display: grid;
 	grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -364,13 +513,20 @@
 	background-image: none;
 }
 
+/*
+ * 封面槽位：高度固定（保证卡片等高、网格整齐），宽度由图片按自身比例撑出（fit-content），
+ * 在卡片内水平居中；槽位两侧露出的是卡片背景色，不是图片内部留白。图片填满槽位，不裁切不拉伸。
+ */
 .gn-work-cover {
-	height: 120px;
+	height: 240px;
+	width: fit-content;
+	margin: 0 auto;
 	border-radius: 6px;
-	background-color: var(--background-secondary);
+	overflow: hidden;
 }
 
 .gn-work-cover--empty {
+	width: 160px;
 	background-image: repeating-linear-gradient(
 		45deg,
 		var(--background-secondary),
@@ -380,12 +536,11 @@
 	);
 }
 
-/* 封面图（page 的 gnd_image）：铺满槽位并居中裁切，圆角随槽位 */
+/* 封面图（project 的 gnd_image）：高度撑满槽位、宽度按自身比例，填满、不裁切、不拉伸 */
 .gn-work-cover-img {
 	display: block;
-	width: 100%;
 	height: 100%;
-	object-fit: cover;
+	width: auto;
 	border-radius: 6px;
 }
 

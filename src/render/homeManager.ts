@@ -1,6 +1,7 @@
 import { homeStatusLabel } from "../core";
 import {
 	MANAGER_TITLE,
+	type DiscardedCardViewModel,
 	type HomeCardViewModel,
 	type HomeControllerSnapshot,
 	type HomeManagerViewModel,
@@ -16,12 +17,14 @@ const EMPTY_TEXT = "—";
  *
  * - 顶部标题恒为 `MANAGER_TITLE`（写死，不读设置）；
  * - `note` 为可定制的管理语；
- * - 灰显（丢失 / 非 home）卡片不参与配色，`color` 为 null，由 ui 统一渲染灰底。
+ * - `cards` 为已登记卡片（灰显卡不参与配色，`color` 为 null，由 ui 统一渲染灰底）；
+ * - `discarded` 为「已废弃」卡片（仅路径；文件是否还在不影响展示）。
  */
 export function buildHomeManagerViewModel(
 	snapshot: HomeControllerSnapshot,
 	note: string,
 	homeColors: Readonly<Record<string, string>> = {},
+	discardedPaths: readonly string[] = [],
 ): HomeManagerViewModel {
 	const cards: HomeCardViewModel[] = snapshot.homes.map((home) => {
 		const dimmed = home.status !== "ok";
@@ -37,7 +40,8 @@ export function buildHomeManagerViewModel(
 			clickable: home.status === "ok",
 		};
 	});
-	return { title: MANAGER_TITLE, note, cards, hasRecords: cards.length > 0 };
+	const discarded: DiscardedCardViewModel[] = discardedPaths.map((filePath) => ({ filePath }));
+	return { title: MANAGER_TITLE, note, cards, discarded, hasRecords: cards.length > 0 || discarded.length > 0 };
 }
 
 /** frontmatter 文本值；空则占位 */

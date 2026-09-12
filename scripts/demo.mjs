@@ -60,7 +60,7 @@ gnd_created: 2026-09-11
 `,
 
 	"小说项目/大宋仙途/大宋仙途.gnd": `---
-gnd_type: page
+gnd_type: project
 gnd_created: 2026-09-11
 gnd_image: assets/cover/Vermilion-2x3-500x750.png
 ---
@@ -79,7 +79,7 @@ gnd_image: assets/cover/Vermilion-2x3-500x750.png
 `,
 
 	"小说项目/都市悬疑/都市悬疑.gnd": `---
-gnd_type: page
+gnd_type: project
 gnd_created: 2026-09-11
 gnd_image: assets/cover/Orange-4x3-667x500.png
 ---
@@ -137,7 +137,7 @@ gnd_created: 2026-09-12
 `,
 
 	"调试样例/04-变量问题.gnd": `---
-gnd_type: page
+gnd_type: project
 gnd_created: 2026-09-12
 gnd_image: ../越界.png
 ---
@@ -182,7 +182,7 @@ gnd_created: 2026-09-12
 `,
 
 	"调试样例/作品甲/作品甲.gnd": `---
-gnd_type: page
+gnd_type: project
 gnd_created: 2026-09-12
 gnd_image: assets/cover/Gold-1x1-512x512.png
 ---
@@ -198,6 +198,41 @@ gnd_image: assets/cover/Gold-1x1-512x512.png
 # gnd_image 指向不存在的图：被导入时预期 [warning] 封面图片不存在
 `,
 
+	"网络封面/主页.gnd": `---
+gnd_type: home
+gnd_created: 2026-09-13
+gnd_modi: 2026-09-13
+---
+
+[欢迎词]
+这是网络封面样例：封面来自 picsum.photos，由插件下载校验重绘后缓存到 .gn-data/image/。
+
+**SELECT**
+> 远山/远山.gnd
+
+**WHERE**
+标题
+作者
+状态
+`,
+
+	"网络封面/远山/远山.gnd": `---
+gnd_type: project
+gnd_created: 2026-09-13
+gnd_modi: 2026-09-13
+gnd_image: https://picsum.photos/seed/gonovel/500/750
+---
+
+[标题]
+远山
+
+[作者]
+皮克斯公社
+
+[状态]
+连载中
+`,
+
 	"调试样例/作品乙/作品乙.gnd": `---
 gnd_type: home
 gnd_created: 2026-09-12
@@ -207,7 +242,7 @@ gnd_created: 2026-09-12
 九心
 
 [简介]
-故意写成 home：被导入时预期 [warning] 导入路径必须指向 page 类型
+故意写成 home：被导入时预期 [warning] 导入路径必须指向 project 类型
 `,
 };
 
@@ -261,6 +296,10 @@ const DATA_JSON = {
 		"小说项目/都市悬疑/都市悬疑.gnd": "#F5D0E8",
 		"调试样例/作品甲/作品甲.gnd": "#FFE7A0",
 	},
+	// 废弃区（演示默认留空）：与 homePaths 互斥，只记录不删文件；要恢复重新登记即可。
+	discardedPaths: [],
+	// 网络封面图片缓存仓库（演示默认留空）：样例封面都是库内路径，不产生网络缓存记录。
+	imageCache: { kind: "image-cache", items: [] },
 };
 
 /* ------------------------------------------------------------------ *
@@ -357,9 +396,10 @@ function reportImages(label, { copied, skipped, missing }) {
  * ------------------------------------------------------------------ */
 
 /**
- * 校验 DATA_JSON 的登记态，挡住两类此前踩过的坑：
+ * 校验 DATA_JSON 的登记态，挡住三类此前踩过的坑：
  *   1. `homeColors` 的键必须与 `homePaths` 一一对应（视图按 homePaths 顺序取色）；
- *   2. 主页卡与作品卡的配色序列中，相邻两张不得同色（插件的唯一配色约束）。
+ *   2. 主页卡与作品卡的配色序列中，相邻两张不得同色（插件的唯一配色约束）；
+ *   3. `discardedPaths` 必须是字符串数组，且与 `homePaths` 互斥（同一路径不能既登记又废弃）。
  */
 function validateDataJson() {
 	const problems = [];
@@ -369,6 +409,16 @@ function validateDataJson() {
 		problems.push(
 			`homeColors 的键必须与 homePaths 同序等长\n        homePaths   = ${JSON.stringify(DATA_JSON.homePaths)}\n        homeColors  = ${JSON.stringify(homeKeys)}`,
 		);
+	}
+
+	const discarded = DATA_JSON.discardedPaths;
+	if (!Array.isArray(discarded) || discarded.some((item) => typeof item !== "string" || item.trim().length === 0)) {
+		problems.push(`discardedPaths 必须是字符串数组，实际 = ${JSON.stringify(discarded)}`);
+	} else {
+		const registered = new Set(DATA_JSON.homePaths);
+		for (const item of discarded) {
+			if (registered.has(item)) problems.push(`废弃区与登记表互斥，但 ${item} 同时出现在两处`);
+		}
 	}
 
 	const bad = (label, keys) => {
@@ -411,6 +461,8 @@ function validateCovers() {
 			continue;
 		}
 		if (deliberate) continue;
+		// 网络封面（http/https）不走本地素材表，由插件的下载缓存流水线负责
+		if (/^https?:\/\//.test(value)) continue;
 		if (IMAGES[value] === undefined) {
 			problems.push(
 				`${rel} 的 gnd_image 指向未定义素材：${value}（有意缺失请登记进 MISSING_COVERS）`,

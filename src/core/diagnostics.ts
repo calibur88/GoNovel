@@ -44,7 +44,7 @@ export interface DiagnosticGroup {
 /**
  * 纯文本诊断：只做「单文件内、不需要读别的文件」的检查。
  *
- * 需要跨文件校验的部分（导入目标是否存在、是否为 page、`**WHERE**` 字段是否命中、
+ * 需要跨文件校验的部分（导入目标是否存在、是否为 project、`**WHERE**` 字段是否命中、
  * 同目录唯一性）由 controller 在扫描时补充。
  *
  * 级别按「谁的问题」分档（见 `DiagnosticLevel`）：frontmatter / gnd_type / 关键字属声明与
@@ -72,7 +72,7 @@ export function analyzeGndText(path: string, text: string): Diagnostic[] {
 			"error",
 			"GND_TYPE_INVALID",
 			"gnd_type 非法",
-			`gnd_type 取值非法：${frontmatter.gndType}（合法值 home / page / cache / data）`,
+			`gnd_type 取值非法：${frontmatter.gndType}（合法值 home / project / data）`,
 			1,
 		);
 	}
@@ -153,8 +153,8 @@ export function analyzeGndText(path: string, text: string): Diagnostic[] {
 	return result;
 }
 
-/** 参与「同目录唯一性」判定的类型：只有 home 与 page 受约束 */
-const UNIQUE_TYPES: readonly string[] = ["home", "page"];
+/** 参与「同目录唯一性」判定的类型：只有 home 与 project 受约束 */
+const UNIQUE_TYPES: readonly string[] = ["home", "project"];
 
 /** 同目录唯一性检查的输入项 */
 export interface DirectoryEntry {
@@ -164,10 +164,10 @@ export interface DirectoryEntry {
 }
 
 /**
- * 同目录唯一性：同一目录下不允许出现多个同类型（`home` / `page`）文档。
+ * 同目录唯一性：同一目录下不允许出现多个同类型（`home` / `project`）文档。
  *
- * 一个目录 = 一个小说项目：`home` 是项目入口、`page` 是作品详情，各自只能有一个。
- * `cache` / `data` 不受约束；`gnd_type` 缺失或非法的文件由文本级规则单独报错，此处跳过。
+ * 一个目录 = 一个小说项目：`home` 是项目入口、`project` 是作品档案，各自只能有一个。
+ * `data` 不受约束；`gnd_type` 缺失或非法的文件由文本级规则单独报错，此处跳过。
  *
  * 只判定传入的条目集合（调用方保证 = 诊断范围，即 `data.json` 中已登记的文件）。
  * 冲突组内**每个文件各报一条 error**，并列出同组其它文件的文件名。

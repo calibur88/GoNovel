@@ -1,4 +1,4 @@
-import { Notice, TFile, type App, type Plugin, type Vault } from "obsidian";
+import { Notice, TFile, requestUrl, type App, type Plugin, type Vault } from "obsidian";
 import { DEV_BUILD } from "./devMode";
 import {
 	GND_EXTENSION,
@@ -7,8 +7,10 @@ import {
 	type IDataSource,
 	type IFileWriter,
 	type IGoNovelHost,
+	type IImageCacheHost,
 	type INotifier,
 	type IStorageHost,
+	type RemoteImageFetch,
 	type StoredSettings,
 } from "../types";
 
@@ -88,6 +90,180 @@ class ObsidianFileWriter implements IFileWriter {
 	}
 }
 
+/** 缓存恒为 PNG（重绘统一重编码），不再从 URL 猜扩展名 */
+
+/** SHA-256 摘要的十六进制前缀（64 位强度足够防碰撞，也控制文件名长度） */
+async function sha256Prefix(data: Uint8Array): Promise<string | null> {
+	if (crypto?.subtle !== undefined) {
+		try {
+			const digest = await crypto.subtle.digest("SHA-256", data as unknown as ArrayBuffer);
+			return toHex(new Uint8Array(digest)).slice(0, 16);
+		} catch {
+			return null;
+		}
+	}
+	// 移动端等 crypto.subtle 不可用的环境：纯 JS 实现退回。
+	// 纯 JS 是同步阻塞的，挪到空闲时段执行（requestIdleCallback，无此 API 用 setTimeout 兜底）。
+	return runWhenIdle(() => sha256PureJs(data).slice(0, 16));
+}
+
+/** 把同步任务排到浏览器空闲时段执行 */
+function runWhenIdle<T>(task: () => T): Promise<T> {
+	return new Promise((resolve) => {
+		const idle = (globalThis as { requestIdleCallback?: (callback: () => void) => number }).requestIdleCallback;
+		if (typeof idle === "function") idle(() => resolve(task()));
+		else window.setTimeout(() => resolve(task()), 0);
+	});
+}
+
+function toHex(bytes: Uint8Array): string {
+	let hex = "";
+	for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
+	return hex;
+}
+
+/** 纯 JS SHA-256（FIPS 180-4），仅在 crypto.subtle 不可用时使用 */
+function sha256PureJs(data: Uint8Array): string {
+	const k = [
+		0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+		0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+		0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+		0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+		0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+		0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+		0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+		0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+	];
+	const h = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+	const withPadding = new Uint8Array((((data.length + 8) >> 6) + 1) << 6);
+	withPadding.set(data);
+	withPadding[data.length] = 0x80;
+	const bitLength = data.length * 8;
+	new DataView(withPadding.buffer).setUint32(withPadding.length - 4, bitLength >>> 0);
+	new DataView(withPadding.buffer).setUint32(withPadding.length - 8, Math.floor(bitLength / 0x100000000));
+	const w = new Uint32Array(64);
+	for (let offset = 0; offset < withPadding.length; offset += 64) {
+		for (let i = 0; i < 16; i += 1) {
+			w[i] = new DataView(withPadding.buffer).getUint32(offset + i * 4);
+		}
+		for (let i = 16; i < 64; i += 1) {
+			const s0 = ((w[i - 15] >>> 7) | (w[i - 15] << 25)) ^ ((w[i - 15] >>> 18) | (w[i - 15] << 14)) ^ (w[i - 15] >>> 3);
+			const s1 = ((w[i - 2] >>> 17) | (w[i - 2] << 15)) ^ ((w[i - 2] >>> 19) | (w[i - 2] << 13)) ^ (w[i - 2] >>> 10);
+			w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+		}
+		let [a, b, c, d, e, f, g, hh] = h;
+		for (let i = 0; i < 64; i += 1) {
+			const S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
+			const ch = (e & f) ^ (~e & g);
+			const temp1 = (hh + S1 + ch + k[i] + w[i]) >>> 0;
+			const S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
+			const maj = (a & b) ^ (a & c) ^ (b & c);
+			const temp2 = (S0 + maj) >>> 0;
+			hh = g;
+			g = f;
+			f = e;
+			e = (d + temp1) >>> 0;
+			d = c;
+			c = b;
+			b = a;
+			a = (temp1 + temp2) >>> 0;
+		}
+		h[0] = (h[0] + a) >>> 0;
+		h[1] = (h[1] + b) >>> 0;
+		h[2] = (h[2] + c) >>> 0;
+		h[3] = (h[3] + d) >>> 0;
+		h[4] = (h[4] + e) >>> 0;
+		h[5] = (h[5] + f) >>> 0;
+		h[6] = (h[6] + g) >>> 0;
+		h[7] = (h[7] + hh) >>> 0;
+	}
+	const out = new Uint8Array(32);
+	const view = new DataView(out.buffer);
+	for (let i = 0; i < 8; i += 1) view.setUint32(i * 4, h[i]);
+	return toHex(out);
+}
+
+/**
+ * 网络封面图片缓存（Obsidian 实现）。
+ *
+ * 原语链：`requestUrl` 下载（不受 CORS 限制）→ `<img>.decode()` + Canvas 重绘
+ * （Blob → img → canvas → `toBlob("image/png")`，剥离全部非像素数据）→ SHA-256 摘要 →
+ * vault adapter 落盘到 `IMAGE_CACHE_DIR`。任何失败都以返回值表达，不向调用方抛错。
+ */
+class ObsidianImageCache implements IImageCacheHost {
+	constructor(private readonly vault: Vault) {}
+
+	async fetch(url: string): Promise<RemoteImageFetch> {
+		try {
+			const response = await requestUrl({ url });
+			const bytes = new Uint8Array(response.arrayBuffer);
+			return { status: response.status, bytes: bytes.length > 0 ? bytes : null };
+		} catch {
+			return { status: 0, bytes: null };
+		}
+	}
+
+	async decodeAndRedraw(data: Uint8Array, mime: string): Promise<Uint8Array | null> {
+		let objectUrl: string | null = null;
+		try {
+			const blob = new Blob([data as unknown as ArrayBuffer], { type: mime });
+			objectUrl = URL.createObjectURL(blob);
+			const image = new Image();
+			image.src = objectUrl;
+			await image.decode();
+			const canvas = document.createElement("canvas");
+			canvas.width = image.naturalWidth;
+			canvas.height = image.naturalHeight;
+			const ctx = canvas.getContext("2d");
+			if (ctx === null) return null;
+			ctx.drawImage(image, 0, 0);
+			const redrawn = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+			if (redrawn === null) return null;
+			return new Uint8Array(await redrawn.arrayBuffer());
+		} catch {
+			return null;
+		} finally {
+			if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
+		}
+	}
+
+	async sha256Hex16(data: Uint8Array): Promise<string | null> {
+		return sha256Prefix(data);
+	}
+
+	async exists(relPath: string): Promise<boolean> {
+		try {
+			return await this.vault.adapter.exists(relPath);
+		} catch {
+			return false;
+		}
+	}
+
+	async write(relPath: string, data: Uint8Array): Promise<boolean> {
+		try {
+			const dir = relPath.substring(0, relPath.lastIndexOf("/"));
+			if (dir.length > 0 && !(await this.vault.adapter.exists(dir))) {
+				await this.vault.adapter.mkdir(dir);
+			}
+			await this.vault.adapter.writeBinary(relPath, data as unknown as ArrayBuffer);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	async remove(relPath: string): Promise<boolean> {
+		try {
+			if (await this.vault.adapter.exists(relPath)) {
+				await this.vault.adapter.remove(relPath);
+			}
+			return true;
+		} catch {
+			return false;
+		}
+	}
+}
+
 /** 组装 Obsidian 宿主实现 */
 export function createObsidianHost(app: App, backend: SettingsBackend): IGoNovelHost {
 	return {
@@ -95,6 +271,7 @@ export function createObsidianHost(app: App, backend: SettingsBackend): IGoNovel
 		storage: new ObsidianStorage(backend),
 		notifier: new ObsidianNotifier(),
 		fileWriter: new ObsidianFileWriter(app.vault),
+		imageCache: new ObsidianImageCache(app.vault),
 	};
 }
 

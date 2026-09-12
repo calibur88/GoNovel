@@ -4,7 +4,7 @@
 > 使用者可以在自己的 Obsidian 仓库里照抄语法，验收者可以据此对照预期现象。
 > 本地验收请去 `test-local/`（带 `-local` 字样的本地目录），两处内容由同一个脚本生成、内容完全一致。
 >
-> **文档定位**：示例库操作手册 ｜ **版本**：v0.5.0（随插件）
+> **文档定位**：示例库操作手册 ｜ **版本**：v0.6.0（随插件）
 > **同步铁律**：本目录的 `.gnd` **由脚本生成**，改样例必须改 `scripts/demo.mjs` 再重新生成；手改会被覆盖。
 
 > **项目速记**：
@@ -17,19 +17,20 @@
 
 | 文件夹 | 内容 |
 |---|---|
-| `小说项目/` | **干净样本**：一个可正常打开的小说项目。`主页.gnd` 是 home（`[欢迎词]` 变量 + `**SELECT**` 导入 2 部作品 + `**WHERE**` 展示 3 个字段），两个作品目录各一份 page |
+| `小说项目/` | **干净样本**：一个可正常打开的小说项目。`主页.gnd` 是 home（`[欢迎词]` 变量 + `**SELECT**` 导入 2 部作品 + `**WHERE**` 展示 3 个字段），两个作品目录各一份 project |
 | `调试样例/` | **错例样本**：故意写错的 `.gnd`（01～07 + 作品甲／作品乙），喂右侧「调试信息」框的诊断。每个文件顶部注释都写明预期现象 |
-| `assets/cover/` | **本地封面副本**：`Vermilion-2x3-500x750.png` 等（颜色-比例-分辨率 命名），供 page 的 `gnd_image` 引用。**不进 git**（已在 `.gitignore` 里），由脚本从项目根 `assets/cover/` 复制补齐 |
+| `网络封面/` | **网络封面样例**：`主页.gnd` 是 home（`**SELECT**` 导入 1 部作品 + `**WHERE**` 展示 3 个字段），作品 `远山` 的 `gnd_image` 指向 `https://picsum.photos/seed/gonovel/500/750`——由插件下载校验重绘后缓存到 `.gn-data/image/`。**默认不登记**；要验证网络封面效果，在「主页管理」里登记 `网络封面/主页.gnd` 即可 |
+| `assets/cover/` | **本地封面副本**：`Vermilion-2x3-500x750.png` 等（颜色-比例-分辨率 命名），供 project 的 `gnd_image` 引用。**不进 git**（已在 `.gitignore` 里），由脚本从项目根 `assets/cover/` 复制补齐 |
 | `data.example.json` | 设置快照：覆盖到 `.obsidian/plugins/go-novel/data.json` 即可复现下面的验收结果 |
 
-## 预置内容（12 个 .gnd，按分类）
+## 预置内容（14 个 .gnd，按分类）
 
-已预置 12 个示例文档，与本地验收套件一一对应：
+已预置 14 个示例文档，与本地验收套件一一对应：
 
 - **干净样本**（3 个）：预期无 error / warning
   - `小说项目/主页.gnd` —— home，演示多级导入 + 字段展示；
-  - `小说项目/大宋仙途/大宋仙途.gnd` —— page，4 个变量 + `gnd_image` 封面；
-  - `小说项目/都市悬疑/都市悬疑.gnd` —— page，3 个变量 + `gnd_image` 封面。
+  - `小说项目/大宋仙途/大宋仙途.gnd` —— project，4 个变量 + `gnd_image` 封面；
+  - `小说项目/都市悬疑/都市悬疑.gnd` —— project，3 个变量 + `gnd_image` 封面。
 - **错例样本**（9 个）：故意各触发一类诊断
   - `01-gnd类型非法.gnd` —— `gnd_type: xxx`；
   - `02-未知关键字.gnd` —— `**SUMMARY**` 未定义 + `**SELECT**` 重复出现；
@@ -38,7 +39,7 @@
   - `05-字段缺失.gnd` —— 导入到 home 类型 + 被引用字段为空；
   - `06-缺少frontmatter.gnd` —— 整份文件没有 frontmatter；
   - `07-缺少gnd类型.gnd` —— 有 frontmatter 但缺 `gnd_type`；
-  - `作品甲/作品甲.gnd` —— page，**故意不写 `[简介]`**（「字段为空」的对端），且 `gnd_image` 指向**不存在的图**（「封面缺失」的对端）；
+  - `作品甲/作品甲.gnd` —— project，**故意不写 `[简介]`**（「字段为空」的对端），且 `gnd_image` 指向**不存在的图**（「封面缺失」的对端）；
   - `作品乙/作品乙.gnd` —— 故意写成 home，作为「导入类型错误」的对端。
 
 ## 诊断等级（三档）
@@ -64,6 +65,8 @@
 | `homePaths` | `调试样例/03-导入路径错误.gnd` | 错例主页，看板出 0 张作品卡 |
 | `homePaths` | `调试样例/05-字段缺失.gnd` | 错例主页，看板出 1 张作品卡 |
 | `projectColors` | `大宋仙途` / `都市悬疑` / `作品甲` | 前两者来自主页，`作品甲` 来自 `05` |
+| `discardedPaths` | （空） | 废弃区：默认留空；「废弃」只移出登记、**文件保留**，要恢复重新登记即可 |
+| `imageCache` | （空仓库） | 网络封面图片缓存：`{ kind: "image-cache", items: [{url, hash, local, source, updated}] }`；样例封面都是库内路径，故 items 留空 |
 
 调试框里应**恰好**出现这 7 行（行格式 `[级别] 错误类型:文件名`，同文件同类型多条在行尾计数）：
 
@@ -72,7 +75,7 @@
 | `03-导入路径错误.gnd` | warning | 导入路径错误 | 2 | 单级路径 + 含 `..` |
 | `03-导入路径错误.gnd` | warning | 导入目标不存在 | 1 | `作品甲/不存在.gnd` |
 | `03-导入路径错误.gnd` | error | 同级目录类型相同 | 1 | 与 `05` 同目录且都是 home |
-| `05-字段缺失.gnd` | warning | 导入类型错误 | 1 | `作品乙` 是 home，不是 page |
+| `05-字段缺失.gnd` | warning | 导入类型错误 | 1 | `作品乙` 是 home，不是 project |
 | `05-字段缺失.gnd` | error | 同级目录类型相同 | 1 | 与 `03` 同目录且都是 home |
 | `05-字段缺失.gnd` | info | 字段缺失 | 1 | `[简介]` 在 `作品甲` 中为空 |
 | `作品甲.gnd` | warning | 封面图片不存在 | 1 | `gnd_image` 指向 `assets/cover/Gold-1x1-512x512.png`（不存在） |
@@ -90,8 +93,8 @@
 | `06-缺少frontmatter.gnd` | `[error] 缺少 frontmatter` + `[warning] 主页类型错误` |
 | `07-缺少gnd类型.gnd` | `[error] gnd_type 缺失` + `[warning] 主页类型错误` |
 
-> 「同目录唯一性」：同一目录下只允许一个 `home`、一个 `page`（一个目录 = 一个小说项目）。
-> 冲突组内**每个文件各报一条 error** 并点名同组其它文件；`cache` / `data` 与非法 `gnd_type` 不参与判定。
+> 「同目录唯一性」：同一目录下只允许一个 `home`、一个 `project`（一个目录 = 一个小说项目）。
+> 冲突组内**每个文件各报一条 error** 并点名同组其它文件；`data` 与非法 `gnd_type` 不参与判定。
 
 ## 可复制示例（按主题分节）
 
@@ -120,11 +123,11 @@ gnd_created: 2026-09-11
 
 变体：把 `> 大宋仙途/大宋仙途.gnd` 改成单级 `> 大宋仙途.gnd`，即命中 `[warning] 导入路径错误` —— 导入路径一律相对**当前文档所在目录**，且必须多级。
 
-**作品（page）：变量块**
+**作品（project）：变量块**
 
 ```gnd
 ---
-gnd_type: page
+gnd_type: project
 gnd_created: 2026-09-11
 ---
 
@@ -142,11 +145,11 @@ gnd_created: 2026-09-11
 
 规则：行尾 `#` 之后是注释，不进入变量值；空行或文件结束即关闭当前变量块；同名变量会拼接取值。
 
-**作品封面（page 的 `gnd_image`）**
+**作品封面（project 的 `gnd_image`）**
 
 ```gnd
 ---
-gnd_type: page
+gnd_type: project
 gnd_created: 2026-09-11
 gnd_image: assets/cover/Orange-4x3-667x500.png
 ---
@@ -155,9 +158,9 @@ gnd_image: assets/cover/Orange-4x3-667x500.png
 命中：看板作品卡顶部渲染该图（铺满槽位、居中裁切）；本示例库两张干净作品卡指向 `assets/cover/Vermilion-2x3-500x750.png` 与 `assets/cover/Orange-4x3-667x500.png`。
 
 规则：值是**相对 vault 根**的库内路径 —— 写 `assets/cover/Orange-4x3-667x500.png`，**不要写 vault 名**，也不要写盘符绝对路径；
-含 `..` 或盘符一律判为非法、视作无封面。**仅 `page` 有效**，写在 home / cache / data 里会被忽略。
+含 `..` 或盘符一律判为非法、视作无封面。**仅 `project` 有效**，写在 home / data 里会被忽略。
 图片不存在（或路径非法）时封面退回空槽（斜纹占位），**同时记一条 `warning` 诊断** —— 看板不中断，但调试框会提示。
-挂载点是声明封面那个 `page` 文件自己（不是引用它的 home），错误类型分别为 `封面图片不存在` / `封面路径非法`。
+挂载点是声明封面那个 `project` 文件自己（不是引用它的 home），错误类型分别为 `封面图片不存在` / `封面路径非法`。
 
 **错例：三类导入错误一次命中**
 
@@ -199,13 +202,17 @@ gnd_created: 2026-09-12
     "小说项目/大宋仙途/大宋仙途.gnd": "#B2D9F5",
     "小说项目/都市悬疑/都市悬疑.gnd": "#F5D0E8",
     "调试样例/作品甲/作品甲.gnd": "#FFE7A0"
+  },
+  "discardedPaths": [],
+  "imageCache": {
+    "kind": "image-cache",
+    "items": []
   }
-}
-```
+}```
 
 命中：覆盖到 `.obsidian/plugins/go-novel/data.json` 后重载插件，管理视图出现 **3** 张主页卡、看板共出 **3** 张作品卡，相邻卡片配色互不相同。
 
-说明：`homeColors` 的键与 `homePaths` 同序等长；`projectColors` 的键必须来自主页实际导入的作品，插件会在每次扫描时裁剪孤儿键、补齐缺失色并对齐相邻同色。
+说明：`homeColors` 的键与 `homePaths` 同序等长；`projectColors` 的键必须来自主页实际导入的作品，插件会在每次扫描时裁剪孤儿键、补齐缺失色并对齐相邻同色；`discardedPaths` 是废弃区，与 `homePaths` 互斥（同一路径不会既登记又废弃），「清理」只清记录、不删文件。
 
 ## 操作
 
@@ -235,6 +242,7 @@ node scripts/demo.mjs --target <dir>   # 指定同步目标（默认 test-local�
 封面素材由 `IMAGES` 定义、从项目根的 `assets/cover/` 复制（源缺失只提示、不报错）。`assets/` 整个目录在 `.gitignore` 里，
 `--check` 不比对它 —— 你可以随意换成自己的图，`--sync` 也不会覆盖已存在的文件。
 
-生成/自检时会跑两道守卫：`validateDataJson()` 校验 `homePaths` 与 `homeColors` 同序等长、相邻配色不同；
+生成/自检时会跑两道守卫：`validateDataJson()` 校验 `homePaths` 与 `homeColors` 同序等长、相邻配色不同，
+且 `discardedPaths` 为字符串数组并与 `homePaths` 互斥；
 `validateCovers()` 校验每个 `gnd_image` 要么命中 `IMAGES`、要么登记在 `MISSING_COVERS` 里
 （故意做封面错例的两个文件）—— 免得把写错的图片路径误当成「有意缺失的错例」。

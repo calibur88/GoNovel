@@ -25,9 +25,9 @@ export interface DebugRowViewModel {
 
 /** 调试信息框视图模型 */
 export interface DebugPanelViewModel {
-	/** 诊断聚合行：按产生时间**倒序**（最新在顶、最旧在底），不再按 error → warning → info 分级 */
+	/** 解析日志聚合行（info / warning / error）：按产生时间**正序**（最早在顶、最新在底） */
 	rows: DebugRowViewModel[];
-	/** 运行日志行：同样最新在顶（controller 以 `unshift` 追加，此处不再重排） */
+	/** 运行日志行：时间正序（controller 追加在尾部，此处不再重排） */
 	logs: DebugRowViewModel[];
 	/** 诊断总条数（不含运行日志） */
 	total: number;
@@ -38,10 +38,10 @@ export interface DebugPanelViewModel {
 /**
  * 构建调试信息框视图模型。
  *
- * 诊断与运行日志**分开成两块**、各自排序：
- * - 诊断：按「级别 + 错误类型 + 文件」聚合成行后，整体按 `seq` 倒序（时间倒序）；
- *   刻意**不按 error → warning → info 分级**——分级排序会让后产生的条目沉底，看不出时序；
- * - 日志：保持 controller 的追加顺序（最新在顶）。
+ * 解析日志与运行日志**分成两个区块、各自独立按时间正序**（最早在顶、最新在底），互不交叉：
+ * - 解析日志：按「级别 + 错误类型 + 文件」聚合成行后，整体按 `seq` 正序；
+ *   刻意**不按 error → warning → info 分级**——分级排序会打乱时序；
+ * - 运行日志：保持 controller 的追加顺序（最新在尾）。
  */
 export function buildDebugPanelViewModel(
 	diagnostics: readonly Diagnostic[],
@@ -67,8 +67,8 @@ export function buildDebugPanelViewModel(
 			seq: group.seq,
 		};
 	});
-	// 诊断：时间倒序（最新在顶）；seq 相同（同一批未盖章）时 sort 保持收集顺序
-	rows.sort((a, b) => b.seq - a.seq);
+	// 解析日志：时间正序（最早在顶）；seq 相同（同一批未盖章）时 sort 保持收集顺序
+	rows.sort((a, b) => a.seq - b.seq);
 
 	const logs: DebugRowViewModel[] = runtimeLog.map((item) => ({
 		level: item.level,
