@@ -1,0 +1,5 @@
+---
+gnd_created: 2026-09-12
+---
+
+有 frontmatter 但缺 gnd_type：预期 [error] gnd_type 缺失（登记后另有 [warning] 主页类型错误）

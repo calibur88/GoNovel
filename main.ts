@@ -1,91 +1,84 @@
-/**
- * GoNovel 插件装配入口（main 层）
- * 只做装配：实例化适配器 → 实例化核心 → 注册视图 → 注册命令，零业务逻辑。
- * 宿主 API 适配在 host/，视图壳在 views/，业务下沉 controller/render/ui。
- */
-
 import { Plugin } from "obsidian";
-import { AppController } from "./src/controller";
-import { createObsidianHost } from "./src/host";
-import { HomepageShellView, WorkbenchShellView, HOMEPAGE_VIEW_TYPE, WORKBENCH_VIEW_TYPE } from "./src/views";
-import { WORKBENCH_BOARD_IDS } from "./src/types";
-import type { IGoNovelHost } from "./src/types";
+import { HomeController } from "./src/controller";
+import { GoNovelSettingTab, createObsidianHost, registerGndAsMarkdown } from "./src/host";
+import {
+	BOARD_VIEW_TYPE,
+	DEBUG_VIEW_TYPE,
+	GND_EXTENSION,
+	MANAGER_VIEW_TYPE,
+	RIBBON_ICON,
+} from "./src/types";
+import {
+	BoardShellView,
+	DebugShellView,
+	ManagerShellView,
+	closeOrphanBoardLeaves,
+	syncDebugLeaf,
+	toggleManagerView,
+} from "./src/views";
 
-/** 持久化到宿主存储的字段（纯数据，可序列化） */
-interface PersistedState {
-	currentBookPath: string | null;
-	activeBoardId: string;
-}
-
-const PERSIST_KEY = "settings";
-
+/**
+ * GoNovel 装配入口。
+ *
+ * 只做接线：宿主适配 → 控制器 → `.gnd` 扩展名注册 → 三个视图注册 → Ribbon → 设置面板 → 刷新触发。
+ */
 export default class GoNovelPlugin extends Plugin {
-	private controller!: AppController;
-	private host!: IGoNovelHost;
+	private controller: HomeController | null = null;
 
 	async onload(): Promise<void> {
-		// 1. 适配器
-		this.host = createObsidianHost(this);
+		// 1. 宿主适配 + 控制器
+		const host = createObsidianHost(this.app, this);
+		const controller = new HomeController(host);
+		this.controller = controller;
+		await controller.load();
 
-		// 2. 从宿主存储恢复设置
-		const saved = await this.host.storage.getItem<PersistedState>(PERSIST_KEY);
-		this.controller = new AppController({
-			visibleBoards: [...WORKBENCH_BOARD_IDS],
-			currentBookPath: saved?.currentBookPath ?? null,
-			activeBoardId: (saved?.activeBoardId as "chapters") ?? "chapters",
-		});
+		// 2. `.gnd` 交给宿主原生 markdown（编辑／阅读／实时预览均不介入）
+		registerGndAsMarkdown(this);
 
-		// 3. 注册视图
-		this.registerView(HOMEPAGE_VIEW_TYPE, (leaf) => new HomepageShellView(leaf, this.controller, this.host));
-		this.registerView(WORKBENCH_VIEW_TYPE, (leaf) => new WorkbenchShellView(leaf, this.controller, this.host));
+		// 3. 注册三个视图：主页管理 / 小说项目主页 / 调试信息
+		this.registerView(MANAGER_VIEW_TYPE, (leaf) => new ManagerShellView(leaf, controller));
+		this.registerView(BOARD_VIEW_TYPE, (leaf) => new BoardShellView(leaf, controller));
+		this.registerView(DEBUG_VIEW_TYPE, (leaf) => new DebugShellView(leaf, controller));
 
-		// 4. 注册命令
-		this.addCommand({
-			id: "open-homepage",
-			name: "打开创作主页",
-			callback: () => {
-				void this.activateView(HOMEPAGE_VIEW_TYPE);
-			},
-		});
-		this.addCommand({
-			id: "open-workbench",
-			name: "打开写作工作台",
-			callback: () => {
-				void this.activateView(WORKBENCH_VIEW_TYPE);
-			},
-		});
+		// 4. Ribbon：toggle 主页管理视图
+		this.addRibbonIcon(RIBBON_ICON, "gn 主页管理", () => toggleManagerView(this.app));
 
-		// 5. 退出时持久化状态
-		this.registerEvent(
-			this.app.workspace.on("quit", () => {
-				void this.persistControllerState();
-			}),
-		);
-	}
+		// 5. 设置面板：主页路径 / 管理说明 / 调试信息开关（与视图共用同一份数据）
+		this.addSettingTab(new GoNovelSettingTab(this.app, this, controller));
 
-	async onunload(): Promise<void> {
-		await this.persistControllerState();
-		this.controller.dispose();
-	}
+		// 6. 调试视图跟随开关；登记列表变化后回收孤儿看板
+		this.app.workspace.onLayoutReady(() => this.syncWorkspace());
+		this.register(controller.onDidChange(() => this.syncWorkspace()));
 
-	private async activateView(viewType: string): Promise<void> {
-		const leaves = this.app.workspace.getLeavesOfType(viewType);
-		if (leaves.length > 0) {
-			this.app.workspace.revealLeaf(leaves[0]);
-			return;
-		}
-		const leaf = this.app.workspace.getLeaf("tab");
-		await leaf.setViewState({ type: viewType, active: true });
-		this.app.workspace.revealLeaf(leaf);
-		this.app.workspace.setActiveLeaf(leaf, { focus: true });
-	}
-
-	private async persistControllerState(): Promise<void> {
-		const { settings } = this.controller.getSnapshot();
-		const state: PersistedState = {
-			currentBookPath: settings.currentBookPath,
-			activeBoardId: settings.activeBoardId,
+		// 7. `.gnd` 变更 → 过滤扩展名后交给控制器合并刷新（300ms 防抖在 controller 内）
+		const onChange = (path: string): void => {
+			if (!path.toLowerCase().endsWith(`.${GND_EXTENSION}`)) return;
+			controller.scheduleRefresh();
 		};
-		await this.host.storage.setItem(PERSIST_KEY, state);
+		this.registerEvent(this.app.vault.on("modify", (file) => onChange(file.path)));
+		this.registerEvent(this.app.vault.on("create", (file) => onChange(file.path)));
+		this.registerEvent(this.app.vault.on("delete", (file) => onChange(file.path)));
+		this.registerEvent(this.app.vault.on("rename", (file) => onChange(file.path)));
+
+		// 8. 工作区就绪后首扫
+		this.app.workspace.onLayoutReady(() => {
+			void controller.refresh();
+		});
+	}
+
+	onunload(): void {
+		// flush() 会一并清掉 controller 内的合并刷新定时器
+		void this.controller?.flush();
+		// 刻意不在这里 detachLeavesOfType()：实测卸载途中 detach 只销毁了 view 实例，
+		// leaf 本身会留成空壳（标题变成 view type），下次启用反而不易收敛。
+		// 重复 leaf 只会出现在「禁用／重载插件」这种开发场景，正常使用不会碰到。
+	}
+
+	/** 工作区同步：调试视图开合跟随开关 + 回收已移出登记列表的看板 leaf（均幂等） */
+	private syncWorkspace(): void {
+		const controller = this.controller;
+		if (controller === null) return;
+		syncDebugLeaf(this.app, controller.getSettings().debugEnabled);
+		closeOrphanBoardLeaves(this.app, controller.getSettings().homePaths);
 	}
 }

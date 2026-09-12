@@ -1,6 +1,6 @@
 # 开发与更新规范
 
-> 本文是 GoNovel 项目的开发、版本、文档与 git 提交的**权威规范**。当前文档版本：0.1.0（与工程主版本号同步）。
+> 本文是 GoNovel 项目的开发、版本、文档与 git 提交的**权威规范**。当前文档版本：0.5.0（与工程主版本号同步）。
 > 与 README（总说明）、ARCHITECTURE（架构）配合阅读。
 
 ## 1. 文档地图
@@ -8,7 +8,7 @@
 | 文档 | 职责 |
 |---|---|
 | README.md | 项目主页：安装、快速开始、核心功能 |
-| ARCHITECTURE.md | 架构权威说明：分层、依赖、数据流 |
+| ARCHITECTURE.md | 架构权威说明：分层、依赖、数据流 —— **尚未撰写**：正式版前补，现阶段以本文 §7 与源码为准 |
 | CONTRIBUTING.md | 开发、版本、文档与 git 提交规范（本文） |
 | CHANGELOG.md | 版本演进史（遵循本文 §6） |
 
@@ -48,7 +48,11 @@ npm run build # 生产构建
 | `CHANGELOG.md` | 版本状态（未推送／已推送）与日期按 §6 维护 |
 | `README.md` | 功能列表与使用说明 |
 | `ARCHITECTURE.md` | 分层与数据流变化 |
+| `demo/README.md` | 示例库预置内容、数量、登记态 × 诊断对照表（改样例必须同步） |
+| `test-local/README.md` | 验收步骤与预期结果（登记块、诊断表需与实测一致） |
 
+> 示例 `.gnd` 的唯一真相源是 `scripts/demo.mjs`（`SAMPLES` / `DATA_JSON`）：改样例先改脚本，再 `node scripts/demo.mjs`，最后 `node scripts/demo.mjs --sync` 落到 `test-local/`。`--check` 会校验 `demo/README.md` 内嵌的设置快照与脚本定义逐字一致。
+>
 > 禁止只改源码不改文档。
 
 ## 6. CHANGELOG 编写规范
@@ -106,7 +110,7 @@ npm run build # 生产构建
 
 ## 7. 代码编写规范（架构级约束）
 
-架构级约束以 ARCHITECTURE.md 为准，核心红线：
+架构级约束以 ARCHITECTURE.md 为准（该文档尚未撰写，现阶段以本节红线与源码为准），核心红线：
 
 - 宿主 SDK 只在 `host/` 出现；core / render / ui 禁止出现宿主符号。
 - 依赖单向向上：main → views → ui → render → controller → core → types。
@@ -133,9 +137,50 @@ npm run build # 生产构建
 
 ## 9. 测试规范
 
+### 9.1 三层验证
+
+| 层次 | 载体 | 对象 | 说明 |
+|---|---|---|---|
+| 离线断言 | `scripts/verify-core.ts` | `demo/` 的**一次性沙箱副本** `.tmp/verify-vault/` | 不依赖 Obsidian，跑通 core + controller + render；断言只读沙箱，示例库本体与 `test-local/` 都不受影响 |
+| 样例同源 | `scripts/demo.mjs` | `demo/` 与 `test-local/` 的 `.gnd` | 全部 `.gnd` 样例的唯一真相源；手改产物会被下次生成覆盖 |
+| 运行态调试 | Obsidian CLI | `test-local/` | 真实 Obsidian 里的 leaf、DOM、控制台与插件状态；**只用于 debug，不跑断言** |
+
 - 测试文件放置于 `tests/` 目录，镜像源码结构。
 - core 零 Mock 框架；controller 用 fake（内存实现）；render 纯函数断言。
 - 新增功能或修复 Bug 时同步新增或更新用例。
+- 示例库与验收环境的约定：`demo/` 是进 git 的**干净示例库**（上传展示用，不留任何不相干文件）；`test-local/` 是挂着 Obsidian 的**实时调试场**（随用随覆盖）。
+
+### 9.2 Obsidian CLI（运行态调试）
+
+本机 `obsidian` CLI 直连 `test-local` 仓库，需要 Obsidian 应用处于运行中；若未运行，第一条命令会自行拉起。
+
+**前置**：Obsidian → 设置 → 常规 → 启用「命令行界面」，按提示注册 CLI。
+
+```bash
+obsidian vault info=path               # 确认打的是本项目的 test-local
+obsidian plugin id=go-novel            # 插件是否启用、版本、manifest 摘要
+obsidian plugin:reload id=go-novel     # 改了产物后重载插件（替代手动关开）
+obsidian tabs                          # 列当前所有 leaf（含自定义 view type）
+obsidian files ext=gnd                 # 列仓库里的 .gnd
+obsidian read path="小说项目/主页.gnd"   # 读文件内容
+```
+
+**开发者命令**（`obsidian --help` 的 `Developer:` 段）
+
+| 命令 | 用途 |
+|---|---|
+| `obsidian eval code="<js>"` | 在应用里执行 JS 并返回结果 —— 读插件实时状态的主力（如 `app.plugins.plugins["go-novel"]`） |
+| `obsidian dev:dom selector=<css>` | 查 DOM：`total` 数元素、`text` 取文本、`attr=` / `css=` 取属性样式 |
+| `obsidian dev:screenshot path=<file>` | 截图留档 |
+| `obsidian dev:console level=error` | 看捕获的控制台消息（`clear` 清缓冲） |
+| `obsidian dev:errors` | 看捕获的报错 |
+| `obsidian dev:css selector=<css>` | 带源码位置的 CSS 排查 |
+| `obsidian devtools` | 打开 Electron DevTools |
+
+**已知限制**
+- `.obsidian/` 下的文件 CLI 读不到（属宿主内部数据），要读 `data.json` 请直接读磁盘。
+- `tab:open view=<自定义 view type>` 对插件的 view type 不生效；打开插件视图请用 `eval` 调插件自己的 opener。
+- 路径里带空格必须用双引号包住并整段作为 `path=` 的值。
 
 ## 10. git 提交规范
 

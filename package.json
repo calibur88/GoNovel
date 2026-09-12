@@ -1,7 +1,7 @@
 {
   "name": "go-novel",
-  "version": "0.1.0",
-  "description": "Obsidian 小说管理插件：创作主页 + 写作工作台（六看板）+ 章节卡片 + 弹窗体系",
+  "version": "0.5.0",
+  "description": "Obsidian 小说管理插件：主页管理 + 小说项目主页（看板），只管 .gnd",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",

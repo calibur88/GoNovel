@@ -5,12 +5,24 @@ node_modules/
 main.js
 *.map
 
+# Local scratch
+.tmp/
+
+# 本地封面素材(demo.mjs 从参考项目复制而来，仅本地调试用，不入库)
+assets/
+
 # Obsidian
 .obsidian/
 data.json
 
 # 本地参考项目(不入库)
 obsidian-webnovel-assistant/
+
+# 本地实时调试场(随用随覆盖，不入库)
+test-local/
+
+# 后续迭代方案记录稿(草案，不入库)
+PLAN.md
 
 # OS
 .DS_Store

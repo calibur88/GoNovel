@@ -1,352 +1,417 @@
-/* GoNovel 全局样式 —— 响应式空 UI 骨架 */
+/* ==========================================================================
+   GoNovel 样式
+   全部选择器以 gn- 前缀命名，颜色只取 Obsidian 主题变量，随主题明暗自适应。
+   ========================================================================== */
 
-/* ===== 创作主页 ===== */
+/* -------------------------- 通用 -------------------------- */
 
-.gn-homepage {
-	display: flex;
-	flex-direction: column;
-	gap: 2rem;
-	padding: 2rem;
-	width: 100%;
-	box-sizing: border-box;
+.gn-empty {
+	padding: 32px 16px;
+	color: var(--text-muted);
+	text-align: center;
+	line-height: 1.8;
 }
 
-.gn-hero {
+/* -------------------------- 主页管理视图 -------------------------- */
+
+.gn-manager {
 	display: flex;
 	flex-direction: column;
-	align-items: flex-start;
-	gap: 1rem;
+	gap: 16px;
+	height: 100%;
+	padding: 24px;
 }
 
-.gn-hero-title {
-	margin: 0;
-	font-size: 1.75rem;
-	font-weight: 500;
+/* 顶部标题：固定文案，不随内容滚动 */
+.gn-manager-title {
+	flex: none;
+	padding-bottom: 12px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	font-size: 1.5em;
+	font-weight: 600;
+	text-align: center;
+}
+
+/* 隔离条：管理语，可定制 */
+.gn-manager-note {
+	flex: none;
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	text-align: center;
+}
+
+.gn-manager-note-text {
 	color: var(--text-normal);
+	font-size: 0.95em;
+	word-break: break-word;
 }
 
-.gn-hero-actions {
+.gn-manager-note-text.gn-is-empty {
+	color: var(--text-faint);
+	font-size: 0.85em;
+}
+
+/* 卡片网格：撑满剩余高度，超出滚动 */
+.gn-card-grid {
+	flex: 1 1 auto;
+	min-height: 0;
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+	gap: 16px;
+	align-content: start;
+	overflow: auto;
+	padding: 4px;
+}
+
+/* 底部按钮栏：钉底，不随卡片滚动 */
+.gn-manager-actions {
+	flex: none;
 	display: flex;
-	gap: 0.5rem;
+	justify-content: center;
+	gap: 12px;
+	padding-top: 12px;
+	border-top: 1px solid var(--background-modifier-border);
 }
 
-.gn-btn {
-	padding: 0.4rem 1rem;
-	border-radius: var(--radius-s);
+.gn-card {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 20px 16px;
 	border: 1px solid var(--background-modifier-border);
-	background: var(--background-secondary);
-	color: var(--text-normal);
+	border-radius: 8px;
+	background-color: var(--background-primary);
+	text-align: center;
+	transition:
+		border-color 0.15s ease,
+		box-shadow 0.15s ease;
+}
+
+.gn-card--clickable {
 	cursor: pointer;
-	font-size: 0.875rem;
-	transition: background-color 0.15s ease;
 }
 
-.gn-btn:hover {
-	background: var(--background-modifier-hover);
-}
-
-.gn-btn-primary {
-	background: var(--interactive-accent);
+.gn-card--clickable:hover {
 	border-color: var(--interactive-accent);
+	box-shadow: 0 0 0 1px var(--interactive-accent);
+}
+
+/* 配色卡：浅色底 → 文字固定深色，保证恒可读 */
+.gn-card--colored {
+	color: #2a2a2a;
+}
+
+.gn-card--colored .gn-card-path,
+.gn-card--colored .gn-card-meta-value {
+	color: #1f1f1f;
+}
+
+.gn-card--colored .gn-card-meta-label {
+	color: #5a5a5a;
+}
+
+/* 灰显卡片（丢失 / 非 home）：不参与配色，统一灰底 */
+.gn-card--dimmed {
+	border-style: dashed;
+	background-color: var(--background-secondary);
+	color: var(--text-muted);
+	opacity: 0.7;
+}
+
+.gn-card-badge {
+	position: absolute;
+	top: 8px;
+	right: 12px;
+	font-size: 0.75em;
+	color: var(--text-warning);
+}
+
+/* 删除模式下角标左移，给 ✕ 让位 */
+.gn-card--deleting .gn-card-badge {
+	right: auto;
+	left: 12px;
+}
+
+.gn-card-remove {
+	position: absolute;
+	top: 4px;
+	right: 6px;
+	padding: 2px 6px;
+	border: none;
+	border-radius: 4px;
+	background-color: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+	line-height: 1;
+}
+
+.gn-card-remove:hover {
+	background-color: var(--background-modifier-error);
 	color: var(--text-on-accent);
 }
 
-.gn-btn-primary:hover {
-	background: var(--interactive-accent-hover);
+.gn-card-path {
+	padding: 0 8px;
+	font-weight: 600;
+	word-break: break-all;
 }
 
-.gn-btn-book {
-	max-width: 220px;
-	overflow: hidden;
-	text-overflow: ellipsis;
+.gn-card-meta {
+	display: flex;
+	justify-content: center;
+	gap: 6px;
+	font-size: 0.85em;
+}
+
+.gn-card-meta-label {
+	color: var(--text-muted);
+}
+
+.gn-card-meta-value {
+	color: var(--text-normal);
+}
+
+/* -------------------------- 清理弹窗 -------------------------- */
+
+.gn-modal-desc {
+	margin-bottom: 12px;
+	line-height: 1.6;
+}
+
+.gn-modal-list {
+	max-height: 320px;
+	overflow: auto;
+	padding: 8px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+}
+
+.gn-modal-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 2px;
+}
+
+.gn-modal-row-path {
+	word-break: break-all;
+}
+
+.gn-modal-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 16px;
+}
+
+/* -------------------------- 调试信息框 -------------------------- */
+
+.gn-debug {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+}
+
+/* 上方留白：把日志压到底部 1/3 */
+.gn-debug-spacer {
+	flex: 2 1 0;
+	min-height: 0;
+}
+
+.gn-debug-log {
+	flex: 1 1 0;
+	min-height: 0;
+	overflow: auto;
+	padding: 8px 10px;
+	border-top: 1px solid var(--background-modifier-border);
+	border-bottom: 1px solid var(--background-modifier-border);
+	font-family: var(--font-monospace);
+	font-size: 0.8em;
+	line-height: 1.7;
+}
+
+.gn-debug-empty {
+	color: var(--text-faint);
+}
+
+.gn-debug-row {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
 	white-space: nowrap;
 }
 
-/* 数据面板：桌面 4 列，窄屏 2 列，超窄 1 列 */
-.gn-stats {
-	display: grid;
-	grid-template-columns: repeat(4, minmax(0, 1fr));
-	gap: 0.75rem;
+.gn-debug-level {
+	flex: none;
 }
 
-.gn-stat-card {
-	padding: 1rem 1.25rem;
-	background: var(--background-secondary);
-	border-radius: var(--radius-m);
-	border: 1px solid var(--background-modifier-border);
+/* 来源：仅在整行放不下时才收缩，保证点线与条数始终可见 */
+.gn-debug-name {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
-.gn-stat-label {
-	font-size: 0.8125rem;
+/* 系统行（无条数）：占满整行，不做无谓截断 */
+.gn-debug-name--full {
+	flex: 1 1 auto;
+}
+
+/* 点线引导：填满来源与条数之间的空隙 */
+.gn-debug-leader {
+	flex: 1 1 auto;
+	min-width: 12px;
+	margin-bottom: 3px;
+	border-bottom: 1px dotted var(--text-faint);
+}
+
+.gn-debug-count {
+	flex: none;
+	color: var(--text-normal);
+}
+
+.gn-debug-row--error .gn-debug-level {
+	color: var(--text-error);
+}
+
+.gn-debug-row--warning .gn-debug-level {
+	color: var(--text-warning);
+}
+
+.gn-debug-row--info .gn-debug-level {
 	color: var(--text-muted);
-	margin-bottom: 0.25rem;
 }
 
-.gn-stat-value {
-	font-size: 1.5rem;
-	font-weight: 500;
-	color: var(--text-normal);
+.gn-debug-actions {
+	flex: none;
+	display: flex;
+	justify-content: center;
+	gap: 12px;
+	padding: 8px 0 4px;
 }
 
-.gn-stat-card.is-primary {
-	background: var(--background-modifier-hover);
-	border-color: var(--interactive-accent);
+/* 刷新进行中：按钮禁用 */
+.gn-debug-actions .gn-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
 }
 
-/* 作品区 */
-.gn-section-title {
-	margin: 0 0 1rem;
-	font-size: 1.125rem;
-	font-weight: 500;
-	color: var(--text-normal);
+/* -------------------------- 小说项目主页（看板） -------------------------- */
+
+.gn-board {
+	display: flex;
+	flex-direction: column;
+	gap: 28px;
+	height: 100%;
+	padding: 32px 24px;
+	overflow: auto;
+}
+
+.gn-board-welcome {
+	font-size: 1.6em;
+	font-weight: 600;
+	line-height: 1.5;
+}
+
+.gn-board-notice {
+	padding: 48px 24px;
+	color: var(--text-muted);
+	text-align: center;
 }
 
 .gn-work-grid {
 	display: grid;
-	grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-	gap: 0.75rem;
+	grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+	gap: 16px;
+	align-content: start;
 }
 
 .gn-work-card {
-	padding: 1rem 1.25rem;
-	background: var(--background-primary);
-	border: 1px solid var(--background-modifier-border);
-	border-radius: var(--radius-m);
-	cursor: pointer;
-	transition: border-color 0.15s ease, background-color 0.15s ease;
-}
-
-.gn-work-card:hover {
-	border-color: var(--interactive-accent);
-	background: var(--background-secondary);
-}
-
-.gn-work-card-head {
 	display: flex;
-	justify-content: space-between;
-	align-items: center;
-	gap: 0.5rem;
-	margin-bottom: 0.5rem;
+	flex-direction: column;
+	gap: 10px;
+	padding: 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	background-color: var(--background-primary);
+}
+
+/* 配色作品卡：与管理视图同一套调色板，文字固定深色恒可读 */
+.gn-work-card--colored {
+	border-color: transparent;
+	color: #2a2a2a;
+}
+
+.gn-work-card--colored .gn-work-title {
+	color: #1f1f1f;
+}
+
+.gn-work-card--colored .gn-field-label {
+	color: #5a5a5a;
+}
+
+.gn-work-card--colored .gn-field-value {
+	color: #1f1f1f;
+}
+
+.gn-work-card--colored .gn-work-cover {
+	background-color: rgba(255, 255, 255, 0.55);
+}
+
+.gn-work-card--colored .gn-work-cover--empty {
+	background-image: none;
+}
+
+.gn-work-cover {
+	height: 120px;
+	border-radius: 6px;
+	background-color: var(--background-secondary);
+}
+
+.gn-work-cover--empty {
+	background-image: repeating-linear-gradient(
+		45deg,
+		var(--background-secondary),
+		var(--background-secondary) 8px,
+		var(--background-secondary-alt) 8px,
+		var(--background-secondary-alt) 16px
+	);
+}
+
+/* 封面图（page 的 gnd_image）：铺满槽位并居中裁切，圆角随槽位 */
+.gn-work-cover-img {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	border-radius: 6px;
 }
 
 .gn-work-title {
-	font-weight: 500;
-	color: var(--text-normal);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+	font-weight: 600;
+	word-break: break-all;
 }
 
-.gn-work-meta {
-	display: flex;
-	gap: 1rem;
-	font-size: 0.8125rem;
-	color: var(--text-muted);
-}
-
-.gn-badge {
-	padding: 0.125rem 0.5rem;
-	border-radius: 999px;
-	font-size: 0.75rem;
-	flex-shrink: 0;
-}
-
-.gn-badge.state-ongoing {
-	background: var(--color-green);
-	color: var(--text-on-accent);
-}
-
-.gn-badge.state-stockpiling {
-	background: var(--color-orange);
-	color: var(--text-on-accent);
-}
-
-.gn-badge.state-completed {
-	background: var(--color-blue);
-	color: var(--text-on-accent);
-}
-
-/* 空态 */
-.gn-empty {
+.gn-work-fields {
 	display: flex;
 	flex-direction: column;
-	align-items: center;
-	gap: 0.5rem;
-	padding: 3rem 1rem;
-	border: 1px dashed var(--background-modifier-border);
-	border-radius: var(--radius-m);
+	gap: 4px;
+	font-size: 0.85em;
+}
+
+.gn-field {
+	display: flex;
+	gap: 8px;
+}
+
+.gn-field-label {
+	flex: none;
 	color: var(--text-muted);
 }
 
-.gn-empty-title {
-	font-size: 1rem;
-	font-weight: 500;
-}
-
-.gn-empty-hint {
-	font-size: 0.875rem;
-}
-
-/* ===== 写作工作台 ===== */
-
-.gn-workbench {
-	display: flex;
-	flex-direction: column;
-	height: 100%;
-	min-height: 0;
-}
-
-.gn-workbench-header {
-	padding: 1rem 1.5rem 0.5rem;
-	border-bottom: 1px solid var(--background-modifier-border);
-}
-
-.gn-workbench-title-row {
-	display: flex;
-	align-items: center;
-	gap: 0.75rem;
-	flex-wrap: wrap;
-}
-
-.gn-workbench-title {
-	margin: 0;
-	font-size: 1.25rem;
-	font-weight: 500;
-	flex-shrink: 0;
-}
-
-.gn-workbench-title-row .gn-btn-book {
-	margin-left: auto;
-}
-
-/* 六看板 tab */
-.gn-board-tabs {
-	display: flex;
-	gap: 0.25rem;
-	padding: 0.5rem 1.5rem 0;
-	border-bottom: 1px solid var(--background-modifier-border);
-	overflow-x: auto;
-}
-
-.gn-board-tab {
-	display: flex;
-	align-items: center;
-	gap: 0.375rem;
-	padding: 0.4rem 0.875rem;
-	border: none;
-	border-bottom: 2px solid transparent;
-	background: transparent;
-	color: var(--text-muted);
-	cursor: pointer;
-	font-size: 0.875rem;
-	white-space: nowrap;
-	transition: color 0.15s ease;
-}
-
-.gn-board-tab:hover {
+.gn-field-value {
 	color: var(--text-normal);
-}
-
-.gn-board-tab.is-active {
-	color: var(--interactive-accent);
-	border-bottom-color: var(--interactive-accent);
-}
-
-.gn-board-tab-icon {
-	font-size: 0.875rem;
-}
-
-/* 过滤条 */
-.gn-filter-bar {
-	padding: 0.75rem 1.5rem;
-	border-bottom: 1px solid var(--background-modifier-border);
-}
-
-.gn-filter-input {
-	width: min(100%, 420px);
-	padding: 0.375rem 0.75rem;
-	border-radius: var(--radius-s);
-	border: 1px solid var(--background-modifier-border);
-	background: var(--background-primary);
-	color: var(--text-normal);
-	font-size: 0.875rem;
-}
-
-.gn-filter-input:focus {
-	border-color: var(--interactive-accent);
-	outline: none;
-}
-
-/* 看板主体（空态） */
-.gn-board-content {
-	flex: 1;
-	min-height: 0;
-	overflow-y: auto;
-	padding: 1.5rem;
-}
-
-.gn-board-empty {
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	gap: 0.5rem;
-	padding: 4rem 1rem;
-	color: var(--text-muted);
-}
-
-.gn-board-empty-icon {
-	font-size: 2rem;
-	opacity: 0.5;
-}
-
-.gn-board-empty-title {
-	font-size: 1rem;
-	font-weight: 500;
-}
-
-.gn-board-empty-hint {
-	font-size: 0.875rem;
-}
-
-/* ===== 响应式 ===== */
-
-@media (max-width: 960px) {
-	.gn-stats {
-		grid-template-columns: repeat(2, minmax(0, 1fr));
-	}
-}
-
-@media (max-width: 640px) {
-	.gn-homepage {
-		padding: 1rem;
-		gap: 1.5rem;
-	}
-
-	.gn-stats {
-		grid-template-columns: 1fr;
-	}
-
-	.gn-hero-actions {
-		width: 100%;
-	}
-
-	.gn-hero-actions .gn-btn {
-		flex: 1;
-	}
-
-	.gn-workbench-header {
-		padding: 0.75rem 1rem 0.375rem;
-	}
-
-	.gn-board-tabs {
-		padding: 0.375rem 1rem 0;
-	}
-
-	.gn-filter-bar {
-		padding: 0.5rem 1rem;
-	}
-
-	.gn-board-content {
-		padding: 1rem;
-	}
+	word-break: break-word;
 }

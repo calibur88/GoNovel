@@ -1,0 +1,15 @@
+---
+gnd_type: page
+gnd_created: 2026-09-12
+gnd_image: assets/cover-9.png
+---
+
+[作者]
+九心
+
+[状态]
+存稿中
+
+[简介]
+# 故意不写简介：被主页的 **WHERE** 引用时预期 [info] 变量在作品甲中不存在或为空
+# gnd_image 指向不存在的图：被导入时预期 [warning] 封面图片不存在

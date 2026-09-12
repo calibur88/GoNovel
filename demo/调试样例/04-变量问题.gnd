@@ -1,0 +1,16 @@
+---
+gnd_type: page
+gnd_created: 2026-09-12
+gnd_image: ../越界.png
+---
+
+[作者]
+九心
+
+[]
+空变量名：预期 [warning] 空变量名，不开启块
+
+[作者]
+重复定义：预期 [warning] 变量 [作者] 重复定义，值已拼接
+
+# gnd_image 带 .. ：登记本文件后预期 [warning] 封面路径非法

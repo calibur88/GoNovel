@@ -1,0 +1,13 @@
+---
+gnd_type: home
+gnd_created: 2026-09-12
+---
+
+**SELECT**
+> 单级.gnd
+> ../越界.gnd
+> 作品甲/不存在.gnd
+
+**WHERE**
+[作者]
+[简介]

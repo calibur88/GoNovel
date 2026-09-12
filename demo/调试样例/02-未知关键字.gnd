@@ -1,0 +1,14 @@
+---
+gnd_type: home
+gnd_created: 2026-09-12
+---
+
+**SUMMARY**
+未定义的关键字：预期 [error] 关键字 **SUMMARY** 未定义
+
+**SELECT**
+> 作品甲/作品甲.gnd
+
+**SELECT**
+重复出现：预期 [error] 关键字 **SELECT** 重复出现，只解析一次
+> 作品甲/作品甲.gnd
