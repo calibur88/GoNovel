@@ -62,7 +62,7 @@ gnd_created: 2026-09-11
 	"小说项目/大宋仙途/大宋仙途.gnd": `---
 gnd_type: page
 gnd_created: 2026-09-11
-gnd_image: assets/cover/cover-1.png
+gnd_image: assets/cover/Vermilion-2x3-500x750.png
 ---
 
 [作者]
@@ -81,7 +81,7 @@ gnd_image: assets/cover/cover-1.png
 	"小说项目/都市悬疑/都市悬疑.gnd": `---
 gnd_type: page
 gnd_created: 2026-09-11
-gnd_image: assets/cover/cover-2.png
+gnd_image: assets/cover/Orange-4x3-667x500.png
 ---
 
 [作者]
@@ -184,7 +184,7 @@ gnd_created: 2026-09-12
 	"调试样例/作品甲/作品甲.gnd": `---
 gnd_type: page
 gnd_created: 2026-09-12
-gnd_image: assets/cover/cover-9.png
+gnd_image: assets/cover/Gold-1x1-512x512.png
 ---
 
 [作者]
@@ -216,15 +216,14 @@ gnd_created: 2026-09-12
  *
  * 这是**自有**封面图（非参考项目）：用户放在 `E:/GoNovel/assets/cover/` 下，由脚本在生成 /
  * 同步时复制进 demo/ 与 test-local/ 的 `assets/cover/`（覆盖写入，保证与源一致）。
- * `assets/` 已在 .gitignore 里——这些图仅本地调试用，不进 git，也不参与 --check。
+ * 根 `assets/cover/` 是用户自有封面图、**随仓库上传**；demo/ 与 test-local/ 里的副本由脚本复制而来（git 忽略），`--check` 不参与比对。
  */
 const IMAGES = {
-	"assets/cover/cover-1.png": "cover-1.png",
-	"assets/cover/cover-2.png": "cover-2.png",
-	"assets/cover/cover-3.png": "cover-3.png",
+	"assets/cover/Vermilion-2x3-500x750.png": "Vermilion-2x3-500x750.png",
+	"assets/cover/Orange-4x3-667x500.png": "Orange-4x3-667x500.png",
 };
 
-/** 封面素材来源：项目根的 `assets/cover/`（自有封面图，不入库） */
+/** 封面素材来源：项目根的 `assets/cover/`（用户自有封面图，随仓库上传） */
 const IMAGE_SOURCE = path.join(ROOT, "assets", "cover");
 
 /**

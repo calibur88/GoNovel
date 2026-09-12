@@ -19,6 +19,9 @@
 **测试补强**
 - demo 新增 2 个错例（`06-缺少frontmatter` / `07-缺少gnd类型`）；verify-core 补 `FRONTMATTER_MISSING` / `GND_TYPE_MISSING` 断言与「缺失主页只报一条 FILE_MISSING」计数断言。
 
+**资源更新**
+- 根 `assets/cover/` 5 张示例封面按 `颜色(英文)-比例-分辨率.png` 重命名（Vermilion / Orange / Emerald / Cyan / Indigo）；用户个人定制封面 `assets/.cover/`（含自定义色）一并随仓库上传；`demo.mjs` 的 `IMAGES`、各 `.gnd` 的 `gnd_image` 引用、verify-core 封面断言同步更新。
+
 **已知问题（本轮不修）**：O-3 `reload()` 未串行化；O-12 设置面板订阅不注销。
 
 **兼容性**：兼容（纯内部健壮性与清理：`data.json` 结构、`.gnd` 语法、视图行为均未变，外部无需做任何事）。

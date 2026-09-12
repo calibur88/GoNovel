@@ -19,7 +19,7 @@
 |---|---|
 | `小说项目/` | **干净样本**：一个可正常打开的小说项目。`主页.gnd` 是 home（`[欢迎词]` 变量 + `**SELECT**` 导入 2 部作品 + `**WHERE**` 展示 3 个字段），两个作品目录各一份 page |
 | `调试样例/` | **错例样本**：故意写错的 `.gnd`（01～07 + 作品甲／作品乙），喂右侧「调试信息」框的诊断。每个文件顶部注释都写明预期现象 |
-| `assets/cover/` | **本地封面素材**：`cover-1~3.png` 等，供 page 的 `gnd_image` 引用。**不进 git**（已在 `.gitignore` 里），由脚本从项目根 `assets/cover/` 复制补齐 |
+| `assets/cover/` | **本地封面副本**：`Vermilion-2x3-500x750.png` 等（颜色-比例-分辨率 命名），供 page 的 `gnd_image` 引用。**不进 git**（已在 `.gitignore` 里），由脚本从项目根 `assets/cover/` 复制补齐 |
 | `data.example.json` | 设置快照：覆盖到 `.obsidian/plugins/go-novel/data.json` 即可复现下面的验收结果 |
 
 ## 预置内容（12 个 .gnd，按分类）
@@ -75,7 +75,7 @@
 | `05-字段缺失.gnd` | warning | 导入类型错误 | 1 | `作品乙` 是 home，不是 page |
 | `05-字段缺失.gnd` | error | 同级目录类型相同 | 1 | 与 `03` 同目录且都是 home |
 | `05-字段缺失.gnd` | info | 字段缺失 | 1 | `[简介]` 在 `作品甲` 中为空 |
-| `作品甲.gnd` | warning | 封面图片不存在 | 1 | `gnd_image` 指向 `assets/cover-9.png` |
+| `作品甲.gnd` | warning | 封面图片不存在 | 1 | `gnd_image` 指向 `assets/cover/Gold-1x1-512x512.png`（不存在） |
 
 > `作品甲` 能被诊断，是因为 `05` 导入了它 —— 它由此进入 `projectColors`，也就进入了诊断范围。
 > 面板里这 7 行**自上而下是时间倒序**（最新在顶），与上表按文件归类的顺序不同。
@@ -148,13 +148,13 @@ gnd_created: 2026-09-11
 ---
 gnd_type: page
 gnd_created: 2026-09-11
-gnd_image: assets/cover-2.png
+gnd_image: assets/cover/Orange-4x3-667x500.png
 ---
 ```
 
-命中：看板作品卡顶部渲染该图（铺满槽位、居中裁切）；本示例库两张干净作品卡指向 `assets/cover-1.png` 与 `assets/cover-2.png`。
+命中：看板作品卡顶部渲染该图（铺满槽位、居中裁切）；本示例库两张干净作品卡指向 `assets/cover/Vermilion-2x3-500x750.png` 与 `assets/cover/Orange-4x3-667x500.png`。
 
-规则：值是**相对 vault 根**的库内路径 —— 写 `assets/cover-2.png`，**不要写 vault 名**，也不要写盘符绝对路径；
+规则：值是**相对 vault 根**的库内路径 —— 写 `assets/cover/Orange-4x3-667x500.png`，**不要写 vault 名**，也不要写盘符绝对路径；
 含 `..` 或盘符一律判为非法、视作无封面。**仅 `page` 有效**，写在 home / cache / data 里会被忽略。
 图片不存在（或路径非法）时封面退回空槽（斜纹占位），**同时记一条 `warning` 诊断** —— 看板不中断，但调试框会提示。
 挂载点是声明封面那个 `page` 文件自己（不是引用它的 home），错误类型分别为 `封面图片不存在` / `封面路径非法`。
