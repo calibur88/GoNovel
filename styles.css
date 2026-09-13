@@ -253,6 +253,123 @@
 	color: var(--text-normal);
 }
 
+/* -------------------------- 工作台（左侧边栏） -------------------------- */
+
+.gn-workspace {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	height: 100%;
+	overflow: hidden;
+	box-sizing: border-box;
+	padding: 10px 8px;
+}
+
+/* ① 主页管理入口：图标 + 文字，整行按钮 */
+.gn-ws-manager {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 10px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background-color: var(--background-secondary);
+	cursor: pointer;
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.gn-ws-manager:hover {
+	border-color: var(--interactive-accent);
+}
+
+.gn-ws-manager-icon {
+	font-size: 1.1em;
+}
+
+/* ② / ③ 公共行 */
+.gn-ws-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.gn-ws-row .gn-search-input {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.gn-ws-edit .gn-btn {
+	flex: 1 1 0;
+}
+
+.gn-ws-delete:hover {
+	background-color: var(--background-modifier-error);
+	color: var(--text-on-accent);
+}
+
+/* ④ 文件树 */
+.gn-ws-tree {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: auto;
+	font-size: 0.9em;
+}
+
+.gn-ws-tree-empty {
+	color: var(--text-faint);
+	padding: 8px 4px;
+	line-height: 1.6;
+}
+
+.gn-ws-dir,
+.gn-ws-file {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 4px;
+	border-radius: 4px;
+	cursor: pointer;
+	color: var(--text-normal);
+	word-break: break-all;
+	white-space: nowrap;
+}
+
+.gn-ws-dir:hover,
+.gn-ws-file:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+/* 层级缩进参考线：每深一级左移一格 + 竖向引导线（│ ├─ └─ 的视觉等价物） */
+.gn-ws-node {
+	display: flex;
+	flex-direction: column;
+}
+
+/* 子树容器：相对父级行缩进 + 竖向参考线（│ ├─ └─ 的视觉等价物） */
+.gn-ws-subtree {
+	margin-left: 9px;
+	padding-left: 12px;
+	border-left: 1px solid var(--background-modifier-border);
+}
+
+.gn-ws-caret {
+	flex: none;
+	width: 1em;
+	color: var(--text-muted);
+	font-size: 0.8em;
+}
+
+.gn-ws-icon {
+	flex: none;
+	font-size: 0.95em;
+}
+
+.gn-ws-file-name {
+	font-family: var(--font-monospace);
+	font-size: 0.95em;
+}
+
 /* -------------------------- 清理弹窗 -------------------------- */
 
 .gn-modal-desc {
@@ -284,6 +401,16 @@
 
 .gn-modal-row-path {
 	word-break: break-all;
+}
+
+.gn-path-input {
+	width: 100%;
+	padding: 6px 8px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background-color: var(--background-primary);
+	color: var(--text-normal);
+	margin-bottom: 4px;
 }
 
 .gn-modal-actions {
@@ -414,7 +541,7 @@
 	text-align: center;
 }
 
-/* 工具行：搜索组靠左、「清理」靠右 */
+/* 工具行：搜索组靠左，「清理」靠右 */
 .gn-board-toolbar {
 	display: flex;
 	align-items: center;

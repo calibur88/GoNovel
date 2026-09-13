@@ -24,29 +24,46 @@ export interface SettingsBackend {
 class ObsidianDataSource implements IDataSource {
 	constructor(private readonly vault: Vault) {}
 
-	async listFilesByExtension(extension: string): Promise<string[]> {
-		const suffix = `.${extension.toLowerCase()}`;
-		return this.vault
-			.getFiles()
-			.filter((file) => file.path.toLowerCase().endsWith(suffix))
-			.map((file) => file.path);
+	async listFiles(): Promise<string[]> {
+		return this.vault.getFiles().map((file) => file.path);
+	}
+
+	async listDir(path: string): Promise<{ folders: string[]; files: string[] }> {
+		try {
+			const listing = await this.vault.adapter.list(path);
+			return { folders: listing.folders, files: listing.files };
+		} catch {
+			return { folders: [], files: [] };
+		}
+	}
+
+	async exists(path: string): Promise<boolean> {
+		try {
+			return await this.vault.adapter.exists(path);
+		} catch {
+			return false;
+		}
 	}
 
 	async read(path: string): Promise<string | null> {
-		const file = this.vault.getAbstractFileByPath(path);
-		if (!(file instanceof TFile)) return null;
-		// 读取失败按「不存在」处理：兑现「不存在返回 null」的契约，不让异常毒化扫描链
+		// 物理真值：走 adapter 真实 IO（iCloud 占位文件等元数据假象在这里现形）
 		try {
-			return await this.vault.cachedRead(file);
+			if (!(await this.vault.adapter.exists(path))) return null;
+			return await this.vault.adapter.read(path);
 		} catch {
 			return null;
 		}
 	}
 
 	async stat(path: string): Promise<FileStat> {
-		const file = this.vault.getAbstractFileByPath(path);
-		if (!(file instanceof TFile)) return { exists: false, mtime: 0 };
-		return { exists: true, mtime: file.stat.mtime };
+		// 物理真值：adapter.exists / adapter.stat（元数据缓存里的假象在这里现形）
+		try {
+			const stat = await this.vault.adapter.stat(path);
+			if (stat === null) return { exists: false, mtime: 0, isDirectory: false };
+			return { exists: true, mtime: stat.mtime, isDirectory: stat.type === "folder" };
+		} catch {
+			return { exists: false, mtime: 0, isDirectory: false };
+		}
 	}
 
 	/** vault 相对路径 → 宿主资源地址（`app://` 协议），可直接用于 `<img src>` */
@@ -88,9 +105,33 @@ class ObsidianFileWriter implements IFileWriter {
 		await this.vault.trash(file, system);
 		return true;
 	}
+
+	async create(path: string): Promise<boolean> {
+		try {
+			if (this.vault.getAbstractFileByPath(path) !== null) return false;
+			const dir = path.substring(0, path.lastIndexOf("/"));
+			if (dir.length > 0) {
+				// 逐级补建父目录（adapter.mkdir 不保证递归）
+				let current = "";
+				for (const segment of dir.split("/")) {
+					current = current.length === 0 ? segment : `${current}/${segment}`;
+					if (!(await this.vault.adapter.exists(current))) {
+						await this.vault.adapter.mkdir(current);
+					}
+				}
+			}
+			await this.vault.create(path, "");
+			return true;
+		} catch {
+			return false;
+		}
+	}
 }
 
 /** 缓存恒为 PNG（重绘统一重编码），不再从 URL 猜扩展名 */
+
+/** 网络封面下载超时（毫秒）：超时按「请求异常」处理（status 0），避免坏链接永久挂起下载 */
+const FETCH_TIMEOUT_MS = 10_000;
 
 /** SHA-256 摘要的十六进制前缀（64 位强度足够防碰撞，也控制文件名长度） */
 async function sha256Prefix(data: Uint8Array): Promise<string | null> {
@@ -195,7 +236,13 @@ class ObsidianImageCache implements IImageCacheHost {
 
 	async fetch(url: string): Promise<RemoteImageFetch> {
 		try {
-			const response = await requestUrl({ url });
+			// 超时兜底：requestUrl 没有超时参数，用 race 限时（请求本身可能仍在跑，但不再挂起调用方）
+			const response = await Promise.race([
+				requestUrl({ url }),
+				new Promise<never>((_resolve, reject) => {
+					window.setTimeout(() => reject(new Error("fetch timeout")), FETCH_TIMEOUT_MS);
+				}),
+			]);
 			const bytes = new Uint8Array(response.arrayBuffer);
 			return { status: response.status, bytes: bytes.length > 0 ? bytes : null };
 		} catch {

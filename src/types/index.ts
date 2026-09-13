@@ -9,20 +9,29 @@
  * 视图类型常量
  * ------------------------------------------------------------------ */
 
-/** 主页管理视图：卡片列表，由 Ribbon 图标 toggle 开关 */
+/** 主页管理视图：卡片列表，由工作台 ① 打开／聚焦 */
 export const MANAGER_VIEW_TYPE = "gonovel-manager";
 
 /** 小说项目主页视图：看板，由管理视图的卡片显式打开 */
 export const BOARD_VIEW_TYPE = "gonovel-board";
 
+/** 工作台视图：左侧边栏，主页管理入口 + 树搜索 + 增删 + 文件树，由 Ribbon 显式打开 */
+export const WORKSPACE_VIEW_TYPE = "gonovel-workspace";
+
+/** 工作台视图标题 */
+export const WORKSPACE_TITLE = "工作台";
+
 /** `.gnd` 扩展名（注册为 markdown，交由宿主原生编辑与阅读） */
 export const GND_EXTENSION = "gnd";
 
-/** 网络封面图片缓存目录（相对 vault 根；清理只删记录，这里的文件一律不动） */
+/** 网络封面图片缓存目录（相对 vault 根；清理 = 删记录 + 删缓存文件） */
 export const IMAGE_CACHE_DIR = ".gn-data/image";
 
-/** Ribbon 图标 id */
-export const RIBBON_ICON = "library-big";
+/** Ribbon 图标 id：插件唯一入口，点开工作台 leaf */
+export const RIBBON_ICON = "layout-dashboard";
+
+/** 主页管理视图图标（入口已移入工作台，仅视图标题用） */
+export const MANAGER_ICON = "home";
 
 /** 调试信息视图：右侧边栏，由「调试信息开关」控制开合 */
 export const DEBUG_VIEW_TYPE = "gonovel-debug";
@@ -32,6 +41,14 @@ export const DEBUG_TITLE = "调试信息";
 
 /** 主页管理视图顶部标题：固定文案，不读 data.json、不可定制 */
 export const MANAGER_TITLE = "主页管理";
+
+/**
+ * 小说项目主页视图的固定名（`gonovel-board`）。
+ *
+ * 标签栏（tab）始终走 `getDisplayText()` 显示主页文件名，本常量只作**未绑定主页**时的兜底标签名；
+ * 视图头部那行灰字由看板接管 `leaf.updateHeader` 覆写——`home` 类型取本名，其它类型（project / data）取文档路径。
+ */
+export const BOARD_TITLE = "小说项目主页管理";
 
 /**
  * 卡片亮丽调色板（12 色，浅色高明度，保证深色文字恒可读）。
@@ -117,18 +134,17 @@ export interface GoNovelSettings {
 	 */
 	projectColors: Record<string, string>;
 	/**
-	 * 已废弃的主页路径（从登记移出、**文件保留**）。
+	 * 工作台文件树里**已折叠**的目录路径（持久化，重开工作台恢复）。
 	 *
-	 * 与 `homePaths` 互斥：同一路径不能既登记又废弃（重新登记时自动从废弃区移除）。
-	 * 「清理」只清这里的记录，不删任何文件。
+	 * 不在集合里 = 展开（默认）。
 	 */
-	discardedPaths: string[];
+	workbenchCollapsed: string[];
 	/**
 	 * 网络封面图片缓存记录（正式形态，无兼容分支）。
 	 *
 	 * `gnd_image` 为 http/https 时下载校验重绘到 `IMAGE_CACHE_DIR` 并在此登记。
 	 * `source` = 声明该封面的 project 文档路径，用于图片废弃区自动识别；
-	 * 「清理」只删记录，缓存图片文件一律不动。
+	 * 「清理」= 删记录 + 删缓存文件（缓存是一次性产物，直接删不进回收站）。
 	 */
 	imageCache: ImageCacheStore;
 }
@@ -163,7 +179,7 @@ export const DEFAULT_SETTINGS: GoNovelSettings = {
 	debugEnabled: false,
 	homeColors: {},
 	projectColors: {},
-	discardedPaths: [],
+	workbenchCollapsed: [],
 	imageCache: { kind: "image-cache", items: [] },
 };
 
@@ -194,37 +210,39 @@ export function mergeSettings(raw: StoredSettings | null | undefined): GoNovelSe
 		if (typeof value !== "string" || !isHexColor(value)) continue;
 		projectColors[key] = value;
 	}
-	// 废弃区：去重、去空，且与 homePaths 互斥（登记优先，重新登记即自动移出废弃区）
-	const discardedPaths = Array.isArray(source.discardedPaths)
-		? dedupePaths(
-				source.discardedPaths.filter(
-					(item): item is string => typeof item === "string" && item.trim().length > 0,
-				),
-			).filter((item) => !alive.has(item))
-		: [];
 	// 图片缓存仓库：只认当前正式形态（kind 对上、items 逐条字段合法），无任何旧形态兼容
 	const imageCache: ImageCacheStore = { kind: "image-cache", items: [] };
 	if (
 		source.imageCache !== null &&
 		typeof source.imageCache === "object" &&
-		(source.imageCache as Partial<ImageCacheStore>).kind === "image-cache" &&
-		Array.isArray((source.imageCache as Partial<ImageCacheStore>).items)
+		(source.imageCache as Partial<ImageCacheStore>).kind === "image-cache"
 	) {
-		for (const item of (source.imageCache as Partial<ImageCacheStore>).items ?? []) {
-			if (item === null || typeof item !== "object") continue;
-			const candidate = item as Partial<ImageCacheItem>;
-			const fields = [candidate.url, candidate.hash, candidate.local, candidate.source, candidate.updated];
-			if (fields.some((field) => typeof field !== "string" || field.trim().length === 0)) continue;
-			imageCache.items.push({
-				url: candidate.url as string,
-				hash: candidate.hash as string,
-				local: candidate.local as string,
-				source: candidate.source as string,
-				updated: candidate.updated as string,
-			});
+		const rawCacheItems = (source.imageCache as Partial<ImageCacheStore>).items;
+		if (Array.isArray(rawCacheItems)) {
+			for (const item of rawCacheItems) {
+				if (item === null || typeof item !== "object") continue;
+				const candidate = item as Partial<ImageCacheItem>;
+				const fields = [candidate.url, candidate.hash, candidate.local, candidate.source, candidate.updated];
+				if (fields.some((field) => typeof field !== "string" || field.trim().length === 0)) continue;
+				imageCache.items.push({
+					url: candidate.url as string,
+					hash: candidate.hash as string,
+					local: candidate.local as string,
+					source: candidate.source as string,
+					updated: candidate.updated as string,
+				});
+			}
 		}
 	}
-	return { homePaths, managerNote, debugEnabled, homeColors, projectColors, discardedPaths, imageCache };
+	// 工作台折叠目录：去重、去空
+	const workbenchCollapsed = Array.isArray(source.workbenchCollapsed)
+		? dedupePaths(
+				source.workbenchCollapsed.filter(
+					(item): item is string => typeof item === "string" && item.trim().length > 0,
+				),
+			)
+		: [];
+	return { homePaths, managerNote, debugEnabled, homeColors, projectColors, workbenchCollapsed, imageCache };
 }
 
 /** 是否为 `#RRGGBB` 形式的颜色值 */
@@ -249,7 +267,7 @@ function dedupePaths(paths: readonly string[]): string[] {
  * ------------------------------------------------------------------ */
 
 /** 主页记录的文件校验状态 */
-export type HomeStatus = "ok" | "missing" | "invalid";
+export type HomeStatus = "ok" | "invalid";
 
 /** 一条作品文档条目（看板卡片的数据来源） */
 export interface WorkDocEntry {
@@ -315,9 +333,9 @@ export interface HomeCardViewModel {
 	clickable: boolean;
 }
 
-/** 已废弃区的一张卡片（仅有路径；文件是否还在不影响展示） */
-export interface DiscardedCardViewModel {
-	/** 已废弃的主页文档路径 */
+/** 已失效区的一张卡片（仅有路径；文件是否还在不影响展示） */
+export interface MissingCardViewModel {
+	/** 磁盘上已不存在的登记路径 */
 	filePath: string;
 }
 
@@ -329,9 +347,9 @@ export interface HomeManagerViewModel {
 	note: string;
 	/** 已登记的卡片 */
 	cards: HomeCardViewModel[];
-	/** 已废弃的卡片 */
-	discarded: DiscardedCardViewModel[];
-	/** 是否存在任何登记或废弃记录 */
+	/** 已失效的卡片（登记路径在磁盘上已不存在，派生废弃区） */
+	missing: MissingCardViewModel[];
+	/** 是否存在任何登记或失效记录 */
 	hasRecords: boolean;
 }
 
@@ -349,7 +367,7 @@ export interface GndWorkCard {
 	fields: Array<{ label: string; value: string }>;
 }
 
-/** 看板「图片废弃区」的一条目：已登记作品的网络封面加载失败 */
+/** 看板「图片废弃区」的一条目：一条失效的网络封面缓存记录——`settings.imageCache.items` 里 `local` 文件不存在、或 `url` 不再被任何文档引用 */
 export interface BoardDiscardedImage {
 	/** 网络图片 URL */
 	url: string;
@@ -410,7 +428,6 @@ export type DiagnosticCode =
 	| "VARIABLE_EMPTY"
 	| "VARIABLE_DUPLICATE"
 	| "DIRECTORY_TYPE_CONFLICT"
-	| "FILE_MISSING"
 	| "HOME_TYPE_INVALID"
 	| "WHERE_FIELD_MISSING"
 	| "COVER_PATH_INVALID"
@@ -459,12 +476,18 @@ export interface FileStat {
 	exists: boolean;
 	/** 最后修改时间戳（毫秒）；不存在为 0 */
 	mtime: number;
+	/** 是否目录（工作台登记条目可能是目录，需区分） */
+	isDirectory: boolean;
 }
 
 /** 数据源：vault 全部读取都经此接口 */
 export interface IDataSource {
-	/** 列出指定扩展名的全部文件路径 */
-	listFilesByExtension(extension: string): Promise<string[]>;
+	/** 列出库中全部文件路径（不限扩展名） */
+	listFiles(): Promise<string[]>;
+	/** 物理列出单层目录（adapter.list：元数据缓存之外的磁盘真值） */
+	listDir(path: string): Promise<{ folders: string[]; files: string[] }>;
+	/** 物理判断文件 / 目录是否存在（adapter.exists，单点判断） */
+	exists(path: string): Promise<boolean>;
 	/** 读取文件文本；不存在返回 null */
 	read(path: string): Promise<string | null>;
 	/** 读取文件状态 */
@@ -501,6 +524,12 @@ export interface IFileWriter {
 	 * @param system true = 系统回收站，false = Obsidian `.trash`
 	 */
 	trash(path: string, system: boolean): Promise<boolean>;
+	/**
+	 * 创建空文本文件（含缺失的父目录）；已存在返回 false。
+	 *
+	 * 工作台「新增」专用：0.7.0 起插件具备创建文件的能力（此前只有登记）。
+	 */
+	create(path: string): Promise<boolean>;
 }
 
 /** 网络图片响应（`IImageCacheHost.fetch` 的结果） */

@@ -20,10 +20,10 @@ export class GndFileSuggestModal extends FuzzySuggestModal<TFile> {
 
 	getItems(): TFile[] {
 		const taken = new Set(this.registered);
-		// 扩展名比较与宿主一致：统一小写，避免 `.GND` 之类大小写变体漏列
+		// 扩展名比较与宿主一致：统一小写，避免 `.GND` 之类大小写变体漏列（GND_EXTENSION 恒为小写）
 		return this.app.vault
 			.getFiles()
-			.filter((file) => file.extension.toLowerCase() === GND_EXTENSION.toLowerCase() && !taken.has(file.path));
+			.filter((file) => file.extension.toLowerCase() === GND_EXTENSION && !taken.has(file.path));
 	}
 
 	getItemText(file: TFile): string {

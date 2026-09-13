@@ -1,5 +1,4 @@
 import {
-	DIAGNOSTIC_LEVELS,
 	isGndType,
 	type Diagnostic,
 	type DiagnosticCode,
@@ -14,11 +13,6 @@ const DEFINED_KEYWORDS: readonly string[] = ["SELECT", "WHERE"];
 const KEYWORD_RE = /^\*\*([A-Za-z_]+)\*\*\s*$/;
 const VARIABLE_RE = /^\[([^\]]*)\]\s*$/;
 const IMPORT_RE = /^>\s*(.+?)\s*$/;
-
-/** 是否为合法级别；非法值按 error 处理 */
-export function isDiagnosticLevel(value: string | null | undefined): value is DiagnosticLevel {
-	return typeof value === "string" && (DIAGNOSTIC_LEVELS as readonly string[]).indexOf(value) >= 0;
-}
 
 /**
  * 诊断聚合行：同一文件同一级别合并成一行，右侧显示条数。
@@ -203,7 +197,8 @@ export function checkDirectoryUniqueness(entries: readonly DirectoryEntry[]): Di
 					detail: `同目录下存在多个 ${gndType} 类型文档：另有 ${others.map((item) => basename(item)).join("、")}`,
 					line: null,
 					target: others[0] ?? null,
-				});			}
+				});
+			}
 		}
 	}
 	return result;

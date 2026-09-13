@@ -2,9 +2,9 @@
  * 最小闭环 + 管理动作校验脚本（不依赖 Obsidian）。
  *
  * 用文件系统实现宿主接口，把真实的 core / controller / render 跑一遍：
- *   data.json（homePaths / managerNote / homeColors / discardedPaths）
+ *   data.json（homePaths / managerNote / homeColors / workbenchCollapsed / imageCache）
  *     → 扫描真实 .gnd → 管理视图 ViewModel → 看板 ViewModel（含 gnd_image 封面）
- *     → 登记 / 废弃 / 清理 → 配色压测
+ *     → 登记 / 移除登记 / 清理 → 配色压测
  *
  * 断言对象是 `demo/`（示例库，唯一真相源），**不是** `test-local/`：
  * 每次运行先把 `demo/` 的样例目录复制成一次性沙箱 `.tmp/verify-vault/`，
@@ -18,11 +18,15 @@ import * as fs from "fs";
 import * as path from "path";
 import { HomeController } from "../src/controller";
 import {
+	buildFileTree,
 	detectImageType,
+	filesInScope,
+	filterTreePaths,
 	groupDiagnostics,
 	imageMimeType,
 	normalizeAssetPath,
 	normalizeCardColors,
+	scopeRootsOf,
 } from "../src/core";
 import { buildDebugPanelViewModel, buildHomeBoardViewModel, buildHomeManagerViewModel } from "../src/render";
 import {
@@ -94,13 +98,28 @@ const DEBUG_SAMPLES = [
 
 /** 基于文件系统的数据源（仅实现最小闭环用到的读取能力） */
 class FileDataSource {
-	async listFilesByExtension(extension: string): Promise<string[]> {
-		const suffix = `.${extension.toLowerCase()}`;
+	async listFiles(): Promise<string[]> {
 		const result: string[] = [];
-		walk(VAULT, (relative) => {
-			if (relative.toLowerCase().endsWith(suffix)) result.push(relative);
-		});
+		walk(VAULT, (relative) => result.push(relative));
 		return result;
+	}
+
+	async listDir(dirPath: string): Promise<{ folders: string[]; files: string[] }> {
+		const absolute = dirPath.length === 0 ? VAULT : path.join(VAULT, dirPath);
+		const folders: string[] = [];
+		const files: string[] = [];
+		if (!fs.existsSync(absolute)) return { folders, files };
+		for (const name of fs.readdirSync(absolute)) {
+			const child = path.join(absolute, name);
+			const relative = dirPath.length === 0 ? name : `${dirPath}/${name}`;
+			if (fs.statSync(child).isDirectory()) folders.push(relative);
+			else files.push(relative);
+		}
+		return { folders, files };
+	}
+
+	async exists(filePath: string): Promise<boolean> {
+		return fs.existsSync(path.join(VAULT, filePath));
 	}
 
 	async read(filePath: string): Promise<string | null> {
@@ -110,8 +129,9 @@ class FileDataSource {
 
 	async stat(filePath: string): Promise<FileStat> {
 		const absolute = path.join(VAULT, filePath);
-		if (!fs.existsSync(absolute)) return { exists: false, mtime: 0 };
-		return { exists: true, mtime: fs.statSync(absolute).mtimeMs };
+		if (!fs.existsSync(absolute)) return { exists: false, mtime: 0, isDirectory: false };
+		const stat = fs.statSync(absolute);
+		return { exists: true, mtime: stat.mtimeMs, isDirectory: stat.isDirectory() };
 	}
 
 	/** 沙箱里没有资源服务器，返回 `file://` 绝对路径，仅用于断言「封面地址已解析」 */
@@ -120,7 +140,7 @@ class FileDataSource {
 	}
 }
 
-/** 文件系统回收站替身：把文件挪进 vault/.trash */
+/** 文件系统回收站替身：把文件挪进 vault/.trash；创建 = 在沙箱内建空文件 */
 class FileWriter implements IFileWriter {
 	async trash(filePath: string, _system: boolean): Promise<boolean> {
 		const absolute = path.join(VAULT, filePath);
@@ -130,11 +150,21 @@ class FileWriter implements IFileWriter {
 		fs.renameSync(absolute, target);
 		return true;
 	}
+
+	async create(filePath: string): Promise<boolean> {
+		const absolute = path.join(VAULT, filePath);
+		if (fs.existsSync(absolute)) return false;
+		fs.mkdirSync(path.dirname(absolute), { recursive: true });
+		fs.writeFileSync(absolute, "", "utf8");
+		return true;
+	}
 }
 
-/** 网络图片缓存替身：不联网（fetch 恒失败），落盘到沙箱内，摘要按字节数伪造 */
+/** 网络图片缓存替身：不联网（fetch 恒失败），落盘到沙箱内，摘要按字节数伪造；统计 fetch 调用（验证延迟下载与会话记忆） */
 class FakeImageCache implements IImageCacheHost {
-	async fetch(): Promise<{ status: number; bytes: Uint8Array | null }> {
+	fetches: string[] = [];
+	async fetch(url: string): Promise<{ status: number; bytes: Uint8Array | null }> {
+		this.fetches.push(url);
 		return { status: 0, bytes: null };
 	}
 
@@ -241,12 +271,13 @@ async function main(): Promise<void> {
 		managerNote: "点卡片进入小说项目主页",
 		homeColors: { "小说项目/主页.gnd": "#FFD9C9" },
 	});
+	const imageCache = new FakeImageCache();
 	const host: IGoNovelHost = {
 		dataSource: new FileDataSource(),
 		storage,
 		notifier,
 		fileWriter: new FileWriter(),
-		imageCache: new FakeImageCache(),
+		imageCache,
 	};
 	const controller = new HomeController(host);
 	await controller.load();
@@ -281,9 +312,9 @@ async function main(): Promise<void> {
 	check("homeColors", controller.getSettings().homeColors, { "小说项目/主页.gnd": "#FFD9C9" });
 
 	console.log("== 2. 扫描主页 ==");
-	// 排除压测临时目录，只统计正式样本
-	const gndFiles = (await host.dataSource.listFilesByExtension("gnd")).filter(
-		(item) => !/^压测/.test(item) && !/^调试样例/.test(item),
+	// 排除压测临时目录，只统计正式样本（沙箱里只有 .gnd，直接过滤扩展名）
+	const gndFiles = (await host.dataSource.listFiles()).filter(
+		(item) => item.toLowerCase().endsWith(".gnd") && !/^压测/.test(item) && !/^调试样例/.test(item),
 	);
 	// 小说项目 3 + 网络封面 2（网络封面样例默认不登记，不参与诊断）
 	check("扫描到的 .gnd 数量（不含压测与调试样例）", gndFiles.length, 5);
@@ -316,7 +347,7 @@ async function main(): Promise<void> {
 	check("卡片状态角标", manager.cards[0]?.statusLabel, "");
 	check("卡片取到配色", manager.cards[0]?.color, "#FFD9C9");
 	check("卡片不灰显", manager.cards[0]?.dimmed, false);
-	check("尚未废弃任何主页", manager.discarded, []);
+	check("尚无失效登记", manager.missing, []);
 
 	console.log("== 4. 看板 ViewModel（含作品配色） ==");
 	const projectColors = controller.getSettings().projectColors;
@@ -350,16 +381,27 @@ async function main(): Promise<void> {
 		homePaths: ["小说项目/不存在.gnd", "小说项目/大宋仙途/大宋仙途.gnd"],
 	});
 	const bad = controller.getSnapshot();
-	check("缺失文件状态", bad.homes[0]?.status, "missing");
-	check("非 home 类型状态", bad.homes[1]?.status, "invalid");
-	const badManager = buildHomeManagerViewModel(bad, "主页管理", controller.getSettings().homeColors);
-	check("缺失角标", badManager.cards[0]?.statusLabel, "文件不存在");
-	check("非 home 角标", badManager.cards[1]?.statusLabel, "非 home 类型");
-	check("缺失不可点击", badManager.cards[0]?.clickable, false);
-	check("缺失卡片灰显", badManager.cards[0]?.dimmed, true);
-	check("灰显卡片不参与配色", badManager.cards[0]?.color, null);
-	const badBoard = buildHomeBoardViewModel(bad, "小说项目/不存在.gnd");
-	check("看板提示", badBoard.notice, "主页文件不存在，请检查后再试。");
+	// 悬空登记不出卡片：路径由派生废弃区（missing）承载，不在 homes 里
+	check("悬空登记不进快照", bad.homes.some((home) => home.filePath === "小说项目/不存在.gnd"), false);
+	check("非 home 类型状态", bad.homes[0]?.status, "invalid");
+	const badManager = buildHomeManagerViewModel(
+		bad,
+		"主页管理",
+		controller.getSettings().homeColors,
+		controller.getMissingHomePaths(),
+	);
+	check("悬空登记不出卡片", badManager.cards.some((c) => c.filePath === "小说项目/不存在.gnd"), false);
+	check("悬空登记进已失效区", badManager.missing.some((m) => m.filePath === "小说项目/不存在.gnd"), true);
+	check("非 home 角标", badManager.cards[0]?.statusLabel, "非 home 类型");
+	const badBoard = buildHomeBoardViewModel(
+		bad,
+		"小说项目/不存在.gnd",
+		{},
+		[],
+		controller.getSettings().homePaths,
+		controller.getMissingHomePaths(),
+	);
+	check("悬空路径无快照（已失效提示）", badBoard.notice, "该主页文件在磁盘上不存在（已列入「已失效」区），无法渲染看板。");
 
 	console.log("== 6. 登记：自动分配未占用色 + 去重 ==");
 	await controller.updateSettings({ homePaths: [] });
@@ -372,54 +414,47 @@ async function main(): Promise<void> {
 	ok("登记后已分配配色", typeof assigned === "string" && assigned.startsWith("#"), String(assigned));
 	ok("分配色来自调色板", CARD_PALETTE.indexOf(assigned) >= 0, String(assigned));
 
-	console.log("== 7. 废弃：移出登记 + 进废弃区，文件保留 ==");
+	console.log("== 7. 移除登记：从登记直接移出（不经过废弃区），文件保留 ==");
 	fs.mkdirSync(path.join(VAULT, "临时"), { recursive: true });
 	fs.writeFileSync(path.join(VAULT, "临时", "待废弃.gnd"), "---\ngnd_type: home\n---\n", "utf8");
 	await controller.addHome("临时/待废弃.gnd");
-	check("废弃前条目数", controller.getSettings().homePaths.length, 2);
-	ok("废弃前配色已分配", controller.getSettings().homeColors["临时/待废弃.gnd"] !== undefined);
-	check("废弃操作成功", await controller.discardHome("临时/待废弃.gnd"), true);
-	check("废弃后文件仍在库中", fs.existsSync(path.join(VAULT, "临时", "待废弃.gnd")), true);
-	check("废弃后未进回收站", fs.existsSync(path.join(TRASH, "待废弃.gnd")), false);
-	check("废弃后条目数", controller.getSettings().homePaths.length, 1);
-	check("废弃区已记录该路径", controller.getDiscardedPaths(), ["临时/待废弃.gnd"]);
-	const discardedManager = buildHomeManagerViewModel(
-		controller.getSnapshot(),
-		controller.getSettings().managerNote,
-		controller.getSettings().homeColors,
-		controller.getDiscardedPaths(),
-	);
-	check("视图模型带出废弃卡", discardedManager.discarded, [{ filePath: "临时/待废弃.gnd" }]);
-	check("废弃后仍有记录", discardedManager.hasRecords, true);
+	check("移除前条目数", controller.getSettings().homePaths.length, 2);
+	ok("移除前配色已分配", controller.getSettings().homeColors["临时/待废弃.gnd"] !== undefined);
+	check("移除登记操作成功", await controller.discardHome("临时/待废弃.gnd"), true);
+	check("移除登记后文件仍在库中", fs.existsSync(path.join(VAULT, "临时", "待废弃.gnd")), true);
+	check("移除登记后未进回收站", fs.existsSync(path.join(TRASH, "待废弃.gnd")), false);
+	check("移除登记 = 从登记直接移出", controller.getSettings().homePaths.includes("临时/待废弃.gnd"), false);
 	ok(
-		"废弃后配色同步移除",
+		"移除登记后配色同步移除",
 		controller.getSettings().homeColors["临时/待废弃.gnd"] === undefined,
 		JSON.stringify(controller.getSettings().homeColors),
 	);
-	check("废弃后无脏数据", Object.keys(controller.getSettings().homeColors).sort(), ["小说项目/主页.gnd"]);
-	check("未登记的路径不能废弃", await controller.discardHome("临时/待废弃.gnd"), false);
-	// 「恢复」= 重新登记：mergeSettings 把已登记项从废弃区剔除
+	check("移除登记后无脏数据", Object.keys(controller.getSettings().homeColors).sort(), ["小说项目/主页.gnd"]);
+	// 文件在、登记不在 → 不进派生废弃区（废弃区只收磁盘不存在的登记路径）
+	await controller.refreshScopedFiles();
+	check("文件存在的未登记路径不进派生废弃区", controller.getMissingHomePaths().includes("临时/待废弃.gnd"), false);
+	// 「恢复」= 重新登记
 	await controller.addHome("临时/待废弃.gnd");
-	check("重新登记后自动移出废弃区", controller.getDiscardedPaths(), []);
-	await controller.discardHome("临时/待废弃.gnd");
-	check("再次废弃后回到废弃区", controller.getDiscardedPaths(), ["临时/待废弃.gnd"]);
+	check("重新登记即恢复", controller.getSettings().homePaths.includes("临时/待废弃.gnd"), true);
 
-	console.log("== 8. 清理：废弃区与丢失主页都只清记录 ==");
-	await controller.updateSettings({
-		homePaths: ["小说项目/主页.gnd", "小说项目/幽灵.gnd"],
-		discardedPaths: ["临时/待废弃.gnd", "临时/幽灵.gnd"],
-	});
-	check("废弃区已就位", controller.getDiscardedPaths(), ["临时/待废弃.gnd", "临时/幽灵.gnd"]);
-	check("缺失路径识别", controller.getMissingPaths(), ["小说项目/幽灵.gnd"]);
-	check("清理废弃区返回条数", await controller.removeDiscarded(["临时/幽灵.gnd"]), 1);
-	check("废弃区剩余", controller.getDiscardedPaths(), ["临时/待废弃.gnd"]);
-	const cleaned = await controller.cleanMissing();
-	check("清理丢失项返回被移除项", cleaned, ["小说项目/幽灵.gnd"]);
-	check("清理后条目", controller.getSettings().homePaths, ["小说项目/主页.gnd"]);
-	check("清理后配色无残留", Object.keys(controller.getSettings().homeColors), ["小说项目/主页.gnd"]);
-	check("废弃文件全程未删", fs.existsSync(path.join(VAULT, "临时", "待废弃.gnd")), true);
-	check("废弃区清空返回条数", await controller.removeDiscarded(["临时/待废弃.gnd"]), 1);
-	check("废弃区已空", controller.getDiscardedPaths(), []);
+	console.log("== 8. 清理：派生废弃区（磁盘不存在的登记路径），从 homePaths 移除 ==");
+	// 外部删掉登记文件（磁盘真值驱动）→ 刷新 → 路径进派生废弃区
+	fs.rmSync(path.join(VAULT, "临时", "待废弃.gnd"));
+	await controller.refresh();
+	check("文件丢失后进派生废弃区", controller.getMissingHomePaths().includes("临时/待废弃.gnd"), true);
+	const missingManager = buildHomeManagerViewModel(
+		controller.getSnapshot(),
+		controller.getSettings().managerNote,
+		controller.getSettings().homeColors,
+		controller.getMissingHomePaths(),
+	);
+	check("视图模型带出失效路径卡", missingManager.missing.some((m) => m.filePath === "临时/待废弃.gnd"), true);
+	check("派生废弃区不影响已登记卡片", missingManager.cards.every((c) => c.color !== undefined), true);
+	// 清理 = 从 homePaths 移除失效路径
+	const cleaned = await controller.removeHomes(controller.getMissingHomePaths());
+	check("清理返回条数", cleaned, 1);
+	check("清理后 homePaths 已移除失效路径", controller.getSettings().homePaths.includes("临时/待废弃.gnd"), false);
+	check("派生废弃区已空", controller.getMissingHomePaths(), []);
 
 	console.log("== 9. 配色压测：30 张卡片，只保证相邻不同色 ==");
 	const stress: string[] = [];
@@ -642,7 +677,6 @@ async function main(): Promise<void> {
 		IMPORT_PATH_INVALID: "warning",
 		IMPORT_TARGET_MISSING: "warning",
 		IMPORT_TARGET_TYPE: "warning",
-		FILE_MISSING: "warning",
 		HOME_TYPE_INVALID: "warning",
 		COVER_PATH_INVALID: "error",
 		COVER_IMAGE_MISSING: "error",
@@ -671,20 +705,17 @@ async function main(): Promise<void> {
 		"warning 收敛到取值 / 引用 / 登记三类",
 		observed
 			.filter((item) => item.level === "warning")
-			.every((item) => ["VARIABLE_EMPTY", "VARIABLE_DUPLICATE", "IMPORT_PATH_INVALID", "IMPORT_TARGET_MISSING", "IMPORT_TARGET_TYPE", "FILE_MISSING", "HOME_TYPE_INVALID"].indexOf(item.code) >= 0),
+			.every((item) => ["VARIABLE_EMPTY", "VARIABLE_DUPLICATE", "IMPORT_PATH_INVALID", "IMPORT_TARGET_MISSING", "IMPORT_TARGET_TYPE", "HOME_TYPE_INVALID"].indexOf(item.code) >= 0),
 	);
 
-	// FILE_MISSING 只在「登记了不存在的文件」时出现，且一个缺失主页只报一条（W-4 去重）
+	// 悬空登记惰性（0.7.0 定稿）：登记指向不存在的文件 = 零输出——不出卡片、不出诊断、不清理；文件回来自动复活
 	await controller.updateSettings({
 		homePaths: [...controller.getSettings().homePaths, "调试样例/09-不存在.gnd"],
 	});
-	const missingDiags = controller.getDiagnostics().filter(
-		(item) => item.code === "FILE_MISSING" && item.path === "调试样例/09-不存在.gnd",
-	);
 	ok(
-		"缺失主页只报一条 FILE_MISSING（warning）",
-		missingDiags.length === 1 && missingDiags[0]?.level === "warning",
-		missingDiags.map((item) => `${item.level}/${item.detail}`).join(" | ") || "未产生",
+		"悬空登记零输出（不出 FILE_MISSING，也不出卡片）",
+		!controller.getDiagnostics().some((item) => item.path === "调试样例/09-不存在.gnd") &&
+			!controller.getSnapshot().homes.some((home) => home.filePath === "调试样例/09-不存在.gnd"),
 	);
 	await controller.updateSettings({ homePaths: ["小说项目/主页.gnd", ...DEBUG_SAMPLES] });
 
@@ -710,12 +741,12 @@ async function main(): Promise<void> {
 	check("刷新不落盘（data.json 未变）", JSON.stringify(storage.value), beforePersist);
 	ok("刷新计入运行日志", controller.getRuntimeLog().some((log) => log.message.includes("诊断刷新完成")));
 	check("诊断输出被刷新结果替换", controller.getDiagnostics().length, refreshed.length);
-	// 登记项缺失：只报它自己的 error，不拖垮其余文件的诊断
+	// 悬空登记零输出，且不拖垮其余文件的诊断
 	await controller.updateSettings({ homePaths: ["小说项目/主页.gnd", "小说项目/幽灵.gnd"] });
 	const isolated = await controller.refreshDiagnostics();
 	ok(
-		"缺失的登记项报 FILE_MISSING",
-		isolated.some((item) => item.path === "小说项目/幽灵.gnd" && item.code === "FILE_MISSING"),
+		"悬空登记零输出（幽灵.gnd 不产诊断）",
+		!isolated.some((item) => item.path === "小说项目/幽灵.gnd"),
 	);
 	ok(
 		"未登记的文件不进诊断（01 已移出 homePaths）",
@@ -735,6 +766,40 @@ async function main(): Promise<void> {
 	ok("看板：作品卡带配色", aliveBoard.cards.every((card) => card.color !== null));
 	const orphanBoard = buildHomeBoardViewModel(controller.getSnapshot(), "调试样例/01-gnd类型非法.gnd", {});
 	ok("看板：未解析的主页给出提示", orphanBoard.notice.length > 0, orphanBoard.notice);
+
+	console.log("== 12b. 看板提示区分：未登记 / 已失效 / 未解析 ==");
+	const boardReg = controller.getSettings().homePaths; // 此时为 ["小说项目/主页.gnd"]
+	const boardSnap = controller.getSnapshot();
+	const unregBoard = buildHomeBoardViewModel(boardSnap, "调试样例/02-未知关键字.gnd", {}, [], boardReg);
+	check("未登记提示", unregBoard.notice, "该文件未在「主页管理」中登记，无法渲染看板。");
+	const missingBoard = buildHomeBoardViewModel(
+		boardSnap,
+		"调试样例/09-不存在.gnd",
+		{},
+		[],
+		[...boardReg, "调试样例/09-不存在.gnd"],
+		["调试样例/09-不存在.gnd"],
+	);
+	check("已失效提示", missingBoard.notice, "该主页文件在磁盘上不存在（已列入「已失效」区），无法渲染看板。");
+	const pendingBoard = buildHomeBoardViewModel(boardSnap, "调试样例/01-gnd类型非法.gnd", {}, [], [...boardReg, "调试样例/01-gnd类型非法.gnd"]);
+	check("未解析提示", pendingBoard.notice, "该主页尚未解析（扫描进行中或文件读取失败）。");
+
+	console.log("== 12c. 网络封面：扫描零网络 + 后台填充 + 会话失败记忆 ==");
+	// 登记网络封面样例（远山.gnd 声明 picsum URL）：扫描阶段不得发起下载
+	await controller.updateSettings({ homePaths: [...boardReg, "网络封面/主页.gnd"] });
+	await new Promise((resolve) => setTimeout(resolve, 50)); // 等后台填充跑完（fire-and-forget）
+	check("扫描零网络 + 后台仅一次下载（按 URL 去重）", imageCache.fetches.length, 1);
+	// 会话失败记忆：失败 URL 本次会话不再重试（再扫一次 fetch 数不变）
+	await controller.refresh();
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	check("会话失败记忆：失败 URL 不再重试", imageCache.fetches.length, 1);
+	ok(
+		"网络封面失败诊断（COVER_DOWNLOAD_FAILED）",
+		controller
+			.getDiagnostics()
+			.some((item) => item.code === "COVER_DOWNLOAD_FAILED" && item.target === "https://picsum.photos/seed/gonovel/500/750"),
+		JSON.stringify(controller.getDiagnostics().filter((item) => item.code.startsWith("COVER_"))),
+	);
 
 	console.log("== 13. 刷新：以 data.json 为真相源 ==");
 	// 模拟外部改动 data.json：直接改存储，不再走 updateSettings
@@ -772,25 +837,16 @@ async function main(): Promise<void> {
 	} as StoredSettings);
 	const legacyController = new HomeController({ ...host, storage: legacyStorage });
 	await legacyController.load();
-	// 旧色值不迁移：homeColors 由扫描按调色板重新分配，projectColors 由作品集合推导
-	ok(
-		"旧 cardColors 直接丢弃（不迁移，未出现旧色值）",
-		!JSON.stringify(legacyController.getSettings().homeColors).includes("#C9F0D9"),
-	);
-	ok(
-		"旧 workColors 直接丢弃（不迁移，未出现旧色值）",
-		!JSON.stringify(legacyController.getSettings().projectColors).includes("#B2F0E6"),
-	);
 	check("未知字段不落盘，登记保留", legacyController.getSettings().homePaths, ["小说项目/主页.gnd"]);
 	await legacyController.updateSettings({ managerNote: "设置面板改的文案" });
 	check("落盘后只剩当前字段", Object.keys(legacyStorage.value ?? {}).sort(), [
 		"debugEnabled",
-		"discardedPaths",
 		"homeColors",
 		"homePaths",
 		"imageCache",
 		"managerNote",
 		"projectColors",
+		"workbenchCollapsed",
 	]);
 	const legacyManager = buildHomeManagerViewModel(
 		legacyController.getSnapshot(),
@@ -801,6 +857,52 @@ async function main(): Promise<void> {
 
 	await controller.updateSettings({ debugEnabled: false });
 	check("关闭开关后不再收集诊断", controller.getDiagnostics(), []);
+
+	console.log("== 15. 工作台：作用域 / 建树 / 过滤 / 增删 ==");
+	check(
+		"作用域根 = 登记主页父目录（去重，码点序：小 < 调）",
+		scopeRootsOf(["小说项目/主页.gnd", "调试样例/03-导入路径错误.gnd", "调试样例/05-字段缺失.gnd"]),
+		["小说项目", "调试样例"],
+	);
+	const wsFiles = controller.getScopedFiles();
+	check("作用域只收 .gnd（未登记目录与非 gnd 文件被忽略）", wsFiles.some((f) => !f.toLowerCase().endsWith(".gnd") || f.startsWith("网络封面/")), false);
+	check("作用域文件包含登记目录", wsFiles.some((f) => f === "小说项目/主页.gnd"), true);
+	check("新建的 .gnd 自动登记（持久化进 homePaths）", controller.getSettings().homePaths.includes("小说项目/工作台新建.gnd"), false);
+	const filtered = filterTreePaths(wsFiles, "主页");
+	check("关键字过滤只留命中文件（祖先由建树派生）", filtered, ["小说项目/主页.gnd"]);
+	check("关键字不区分大小写", filterTreePaths(wsFiles, "GND").length, filterTreePaths(wsFiles, "gnd").length);
+	// 伪影回归：祖先目录条目与文件条目同名时，只出一个目录节点，不出现同名文件节点
+	const phantomTree = buildFileTree(["lllll", "lllll/rrrr.gnd"]);
+	check(
+		"伪影回归：目录条目不重复成文件节点",
+		phantomTree.length === 1 && phantomTree[0].isDir && phantomTree[0].children.length === 1,
+		true,
+	);
+	const tree = buildFileTree(["小说项目/主页.gnd", "小说项目/大宋仙途/大宋仙途.gnd"]);
+	check("建树：根目录数", tree.length, 1);
+	check("建树：目录在前文件在后", tree[0].children.map((c) => `${c.name}:${c.isDir ? "d" : "f"}`), [
+		"大宋仙途:d",
+		"主页.gnd:f",
+	]);
+	const restored = controller.getSettings().debugEnabled;
+	await controller.updateSettings({ debugEnabled: restored });
+
+	// 新增：不带后缀自动补 .gnd；父目录登记进 homePaths（目录条目，作用域持久化）
+	const created = await controller.createFile("测试目录/新首页");
+	ok("工作台新增（自动补 .gnd 后缀）", created && fs.existsSync(path.join(VAULT, "测试目录/新首页.gnd")));
+	check("父目录登记进 homePaths", controller.getSettings().homePaths.includes("测试目录"), true);
+	check("新文件立刻进作用域列表", controller.getScopedFiles().includes("测试目录/新首页.gnd"), true);
+	ok("重复创建被拒（文件已存在）", (await controller.createFile("测试目录/新首页")) === "exists");
+	ok("试图建在 vault 根被拒", (await controller.createFile("根目录文件")) === "root");
+	// 删除：homePaths 不动（目录留着，空了列表自然消失）；文件不存在 = 静默成功
+	await controller.deleteFile("测试目录/新首页");
+	ok("工作台删除文件（进回收站）", !fs.existsSync(path.join(VAULT, "测试目录/新首页.gnd")));
+	check("删除不动 homePaths", controller.getSettings().homePaths.includes("测试目录"), true);
+	await controller.deleteFile("测试目录/新首页");
+	ok("文件不存在也当成功（静默）", !fs.existsSync(path.join(VAULT, "测试目录/新首页.gnd")));
+	// 折叠目录持久化
+	controller.persistCollapsedDirs(["小说项目/大宋仙途"]);
+	check("折叠目录持久化", controller.getSettings().workbenchCollapsed, ["小说项目/大宋仙途"]);
 
 	// 清理压测残留（废弃全程不动文件，回收站里不应残留任何东西）
 	fs.rmSync(workDir, { recursive: true, force: true });

@@ -1,8 +1,8 @@
 import { ItemView, type App, type WorkspaceLeaf } from "obsidian";
 import type { HomeController } from "../controller";
-import { CleanModal, GndFileSuggestModal } from "../host";
+import { CleanModal, PathInputModal } from "../host";
 import { buildHomeManagerViewModel } from "../render";
-import { MANAGER_TITLE, MANAGER_VIEW_TYPE, RIBBON_ICON } from "../types";
+import { MANAGER_ICON, MANAGER_TITLE, MANAGER_VIEW_TYPE } from "../types";
 import { renderHomeManager } from "../ui";
 import { openBoardView } from "./boardShell";
 
@@ -10,7 +10,7 @@ import { openBoardView } from "./boardShell";
  * 主页管理视图壳（`gonovel-manager`）。
  *
  * 只做「读快照 → 构建 ViewModel → 交给 ui 渲染」与交互转发，不含业务逻辑。
- * 头部固定（标题／管理语／四按钮），主体可滚动（已登记 + 已废弃）。
+ * 头部固定（标题／管理语／四按钮），主体可滚动（已登记 + 已失效）。
  */
 export class ManagerShellView extends ItemView {
 	private unsubscribe: (() => void) | null = null;
@@ -33,7 +33,7 @@ export class ManagerShellView extends ItemView {
 	}
 
 	getIcon(): string {
-		return RIBBON_ICON;
+		return MANAGER_ICON;
 	}
 
 	async onOpen(): Promise<void> {
@@ -52,7 +52,7 @@ export class ManagerShellView extends ItemView {
 			this.controller.getSnapshot(),
 			settings.managerNote,
 			settings.homeColors,
-			settings.discardedPaths,
+			this.controller.getMissingHomePaths(),
 		);
 		renderHomeManager(
 			{ document: this.contentEl.ownerDocument },
@@ -67,7 +67,7 @@ export class ManagerShellView extends ItemView {
 					this.discardMode = !this.discardMode;
 					this.render();
 				},
-				onDiscardCard: (filePath) => void this.controller.discardHome(filePath),
+				onRemoveCard: (filePath) => void this.controller.discardHome(filePath),
 				onSearch: (query) => {
 					this.searchText = query;
 					this.render();
@@ -100,49 +100,58 @@ export class ManagerShellView extends ItemView {
 		return JSON.stringify([settings.homePaths, settings.managerNote, settings.debugEnabled]);
 	}
 
-	/** 登记：原生模糊选择器列出库中已有的 .gnd（已登记的不再列出；不创建文件） */
+	/** 登记：弹文本输入框添加新 home（默认 .gnd、可省略后缀；路径暂不存在也允许——会进派生废弃区） */
 	private add(): void {
-		const registered = this.controller.getSettings().homePaths;
-		const modal = new GndFileSuggestModal(this.app, registered, (file) => {
-			void this.addHome(file.path);
-		});
-		modal.open();
+		new PathInputModal(this.app, {
+			title: "请输入登记路径",
+			placeholder: "例：小说项目/新主页（默认 .gnd，可省略后缀）",
+			onConfirm: (path) => void this.addHome(path),
+		}).open();
 	}
 
-	private async addHome(filePath: string): Promise<void> {
-		const added = await this.controller.addHome(filePath);
-		if (!added) this.controller.notify("该路径已登记");
+	private async addHome(path: string): Promise<void> {
+		const added = await this.controller.addHome(path);
+		if (!added) {
+			this.controller.notify("该路径已登记");
+			return;
+		}
+		// 登记的是意图清单：路径指向的文件不存在时照常登记（落派生废弃区），但要 warn 提醒
+		if (!(await this.controller.fileExists(path))) {
+			this.controller.notify(`⚠ 该输入路径无效（文件不存在，已列入已失效区）：${path}`);
+		} else {
+			this.controller.notify(`已登记：${path}`);
+		}
 	}
 
-	/** 清理：弹窗列出「已废弃」与「已丢失的主页」，确认后只清 data.json 记录（不删文件） */
+	/** 清理：弹窗列出派生废弃区（登记路径在磁盘上已不存在），确认后从 homePaths 移除（不删文件） */
 	private clean(): void {
-		const discarded = this.controller.getDiscardedPaths();
-		const missing = this.controller.getMissingPaths();
-		if (discarded.length === 0 && missing.length === 0) {
+		const missing = this.controller.getMissingHomePaths();
+		if (missing.length === 0) {
 			this.controller.notify("没有可清理的记录");
 			return;
 		}
-		const modal = new CleanModal(this.app, discarded, missing, (selection) => {
-			void this.applyClean(selection.discarded, selection.missing);
+		const modal = new CleanModal(this.app, missing, (paths) => {
+			void this.applyClean(paths);
 		});
 		modal.open();
 	}
 
-	private async applyClean(discarded: string[], missing: string[]): Promise<void> {
-		const removedDiscard = await this.controller.removeDiscarded(discarded);
-		const removedMissing = await this.controller.removeHomes(missing);
-		const total = removedDiscard + removedMissing;
-		if (total > 0) this.controller.notify(`已清理 ${total} 条记录（未删除任何文件）`);
+	private async applyClean(paths: string[]): Promise<void> {
+		const removed = await this.controller.removeHomes(paths);
+		if (removed > 0) this.controller.notify(`已清理 ${removed} 条失效登记`);
 	}
 }
 
-/** Ribbon 图标行为：已开则关闭，未开则新开（toggle） */
-export function toggleManagerView(app: App): void {
-	const leaves = app.workspace.getLeavesOfType(MANAGER_VIEW_TYPE);
-	if (leaves.length > 0) {
-		for (const leaf of leaves) leaf.detach();
+
+/** 打开或聚焦主页管理视图（主编辑区）：工作台 ① 的目标（原 Ribbon 入口已移入工作台） */
+export function openManagerView(app: App): void {
+	const existing = app.workspace.getLeavesOfType(MANAGER_VIEW_TYPE)[0];
+	if (existing !== undefined) {
+		void app.workspace.revealLeaf(existing);
 		return;
 	}
 	const leaf = app.workspace.getLeaf("tab");
-	void leaf.setViewState({ type: MANAGER_VIEW_TYPE, active: true });
+	void leaf.setViewState({ type: MANAGER_VIEW_TYPE, active: true }).then(() => {
+		void app.workspace.revealLeaf(leaf);
+	});
 }

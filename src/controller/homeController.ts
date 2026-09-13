@@ -4,7 +4,9 @@ import {
 	basename,
 	checkDirectoryUniqueness,
 	classifyHome,
+	dirname,
 	extractWelcome,
+	filesInScope,
 	findHome,
 	imageMimeType,
 	isHttpUrl,
@@ -60,7 +62,7 @@ type CoverFailureCode =
  * - 调试框的「刷新」为只读重跑（见 `refreshDiagnostics`），不写 `data.json`、不改颜色。
  */
 export class HomeController {
-	private settings: GoNovelSettings = { ...DEFAULT_SETTINGS, homePaths: [], homeColors: {} };
+	private settings: GoNovelSettings = { ...DEFAULT_SETTINGS };
 	private snapshot: HomeControllerSnapshot = { homes: [], scannedAt: 0 };
 	/** `.gnd` 诊断：每次扫描重建（仅在调试开关开启时收集） */
 	private diagnostics: Diagnostic[] = [];
@@ -70,18 +72,29 @@ export class HomeController {
 	private refreshing = false;
 	/** 图片废弃区：失效的网络封面记录（文档被删 + 加载失败两类，每次扫描时判定） */
 	private discardedImages: BoardDiscardedImage[] = [];
-	/** 网络封面流水线的失败明细（URL+来源 → 失败码），由 `diagnoseCover()` 转成 error 诊断、转成图片废弃区 */
-	private coverIssues = new Map<
-		string,
-		{ code: CoverFailureCode; message: string; detail: string; url: string; source: string }
-	>();
+	/** 网络封面流水线的失败明细（URL → 失败码），由 `diagnoseCover()` 转成 error 诊断。
+	 *  会话级记忆：某 URL 失败后本次会话不再重试（避免每次扫描重复卡网络），重启后自然复位；
+	 *  扫描 / 诊断刷新都不清除，只随会话结束而复位。 */
+	private coverIssues = new Map<string, { code: CoverFailureCode; message: string; detail: string; url: string }>();
+	/** 本次扫描发现、等待后台填充的网络封面（缓存未命中的 URL，scan 结束由 `fillPendingCovers` 下载） */
+	private pendingCovers = new Map<string, { url: string; source: string }>();
 	private listeners = new Set<() => void>();
 	private refreshChain: Promise<void> = Promise.resolve();
 	private saveChain: Promise<void> = Promise.resolve();
 	/** `.gnd` 变更合并刷新的防抖定时器 */
 	private refreshTimer: number | null = null;
+	/** 工作台文件树轻量刷新的防抖定时器 */
+	private scopedRefreshTimer: number | null = null;
 	/** 诊断「首次出现」序号登记（级别+错误码+路径 → seq）：跨扫描保持老问题的老位置 */
 	private diagnosticFirstSeen = new Map<string, number>();
+	/** 工作台文件树作用域内的全部文件（登记主页父目录子树，不限扩展名；每次扫描时刷新） */
+	private scopedFiles: string[] = [];
+	/** 派生废弃区：homePaths 中磁盘不存在的路径（每次扫描时判定） */
+	private missingHomePaths: string[] = [];
+	/** 工作台文件树版本号：物理相对账期间有新快照则放弃本批（封死竞态） */
+	private scopedFilesVersion = 0;
+	/** homePaths 里的目录条目（工作台新增产生）：只作作用域根，不是主页 */
+	private dirEntries = new Set<string>();
 
 	/**
 	 * `.gnd` 变更后的合并刷新：300ms 防抖，连续变更只触发一次扫描。
@@ -133,8 +146,8 @@ export class HomeController {
 			debugEnabled: this.settings.debugEnabled,
 			homeColors: { ...this.settings.homeColors },
 			projectColors: { ...this.settings.projectColors },
-			discardedPaths: this.settings.discardedPaths.slice(),
-			imageCache: { ...this.settings.imageCache },
+			workbenchCollapsed: this.settings.workbenchCollapsed.slice(),
+			imageCache: { ...this.settings.imageCache, items: [...this.settings.imageCache.items] },
 		};
 	}
 
@@ -185,58 +198,44 @@ export class HomeController {
 	 * 已登记或非法路径返回 false，不做任何写入。
 	 */
 	async addHome(rawPath: string): Promise<boolean> {
-		const result = addHomePath(this.settings.homePaths, rawPath);
+		// 登记默认 gnd 类型：末段无扩展名时自动补 `.gnd`（与工作台一致）
+		const path = this.withGndExtension(normalizePath(rawPath.trim()));
+		const result = addHomePath(this.settings.homePaths, path);
 		if (!result.added) return false;
 
 		// 新条目追加在末尾；配色由 updateSettings 统一对齐（补色 + 消除相邻同色）
 		await this.updateSettings({ homePaths: result.paths });
-		this.logRuntime(`登记主页 | ${normalizePath(rawPath)}`);
+		this.logRuntime(`登记主页 | ${path}`);
 		return true;
 	}
 
-	/** 取消登记一个主页路径（不动文件，同步移除配色） */
-	async removeHome(rawPath: string): Promise<void> {
+	/** 取消登记一个主页路径（不动文件，同步移除配色）；有变更返回 true */
+	async removeHome(rawPath: string): Promise<boolean> {
 		const path = normalizePath(rawPath);
 		const next = this.settings.homePaths.filter((item) => item !== path);
-		if (next.length === this.settings.homePaths.length) return;
+		if (next.length === this.settings.homePaths.length) return false;
 		await this.updateSettings({ homePaths: next });
+		return true;
 	}
 
 	/**
-	 * 废弃一个主页：**不动文件**——从登记移出、记入废弃区（`discardedPaths`）。
+	 * 「移除登记」（原「废弃」按钮）：用户主动操作，**从登记直接移出，不经过废弃区**（文件保留）。
 	 *
-	 * 返回是否发生了变更。要恢复直接重新登记即可（登记时自动移出废弃区）。
+	 * 废弃区是派生的（`getMissingHomePaths`：登记路径在磁盘上不存在），不再有独立存储。
 	 */
 	async discardHome(rawPath: string): Promise<boolean> {
-		const path = normalizePath(rawPath);
-		if (this.settings.homePaths.indexOf(path) < 0) return false;
-
-		const nextHome = this.settings.homePaths.filter((item) => item !== path);
-		const nextDiscarded =
-			this.settings.discardedPaths.indexOf(path) >= 0
-				? this.settings.discardedPaths.slice()
-				: [...this.settings.discardedPaths, path];
-		await this.updateSettings({ homePaths: nextHome, discardedPaths: nextDiscarded });
-		this.host.notifier.notify(`已废弃：${basename(path)}（文件保留）`);
-		this.logRuntime(`废弃主页 | ${path}`);
-		return true;
-	}
-
-	/** 已废弃的主页路径（拷贝） */
-	getDiscardedPaths(): string[] {
-		return this.settings.discardedPaths.slice();
-	}
-
-	/** 批量清理废弃记录：只从 data.json 移除登记，不删文件；返回实际移除数量 */
-	async removeDiscarded(paths: readonly string[]): Promise<number> {
-		if (paths.length === 0) return 0;
-		const drop = new Set(paths.map((item) => normalizePath(item)));
-		const next = this.settings.discardedPaths.filter((item) => !drop.has(item));
-		const removed = this.settings.discardedPaths.length - next.length;
-		if (removed === 0) return 0;
-		await this.updateSettings({ discardedPaths: next });
-		this.logRuntime(`清理完成 | 共清理 ${removed} 条废弃记录`);
+		const removed = await this.removeHome(rawPath);
+		if (removed) this.host.notifier.notify(`已移除登记：${basename(normalizePath(rawPath))}（文件保留）`);
 		return removed;
+	}
+
+	/**
+	 * 派生废弃区：homePaths 中**磁盘不存在的路径**（每次扫描时判定）。
+	 *
+	 * 废弃区是算出来的，不是存下来的——`discardedPaths` 字段已删除，没有脏数据。
+	 */
+	getMissingHomePaths(): string[] {
+		return this.missingHomePaths.slice();
 	}
 
 	/** 批量移除若干登记项（同步移除配色），返回实际移除数量 */
@@ -251,29 +250,101 @@ export class HomeController {
 		return removed;
 	}
 
-	/** 清理全部已丢失（文件不存在）的登记项，返回被移除的路径 */
-	async cleanMissing(): Promise<string[]> {
-		const missing = this.getMissingPaths();
-		const removed = await this.removeHomes(missing);
-		if (removed === 0) return [];
-		this.host.notifier.notify(`已清理 ${removed} 条丢失记录`);
-		return missing;
-	}
-
-	/** 当前快照中状态为「缺失」的路径 */
-	getMissingPaths(): string[] {
-		return this.snapshot.homes.filter((home) => home.status === "missing").map((home) => home.filePath);
-	}
-
 	/** 图片废弃区记录（来源 .gnd 已不存在；上次扫描时判定，拷贝） */
 	getDiscardedImages(): BoardDiscardedImage[] {
 		return this.discardedImages.slice();
 	}
 
+	/** 工作台文件树作用域内的全部文件路径（拷贝） */
+	getScopedFiles(): string[] {
+		return this.scopedFiles.slice();
+	}
+
+	/** 文件 / 目录是否真实存在于磁盘（物理 IO） */
+	async fileExists(path: string): Promise<boolean> {
+		return (await this.host.dataSource.stat(path)).exists;
+	}
+
 	/**
-	 * 批量清理图片缓存记录：只从 `data.json` 移除，`.gn-data/image/` 下的图片文件一律不动。
+	 * 工作台「新增」结果：`true` = 创建成功；`"exists"` = 同名文件已存在；`"root"` = 试图建在 vault 根；`false` = 其它失败。
+	 */
+	async createFile(rawPath: string): Promise<boolean | "exists" | "root"> {
+		const path = this.withGndExtension(normalizePath(rawPath.trim()));
+		if (path.length === 0) return false;
+		const parentDir = dirname(path);
+		if (parentDir.length === 0) return "root"; // 不允许直接建在 vault 根
+		const created = await this.host.fileWriter.create(path);
+		if (!created) return "exists";
+		this.logRuntime(`新增文件 | ${path}`);
+		// 父目录登记进 homePaths（作用域持久化），新文件立刻出现在列表里
+		if (this.settings.homePaths.indexOf(parentDir) < 0) {
+			await this.updateSettings({ homePaths: [...this.settings.homePaths, parentDir] });
+		} else {
+			await this.refreshScopedFiles();
+			this.emit();
+		}
+		return true;
+	}
+
+	/**
+	 * 工作台「删除」：删文件；**若是 home（路径在 `homePaths` 里）再移出登记**——
+	 * homePaths 变更触发监听，设置面板 / 工作台文件列表 / 主页管理自动同步。
+	 * 不是 home（只是作用域里的 project 源文件）→ 不处理登记。
 	 *
-	 * 返回实际移除数量；来源记录销毁后，下次扫描不会再出现在图片废弃区。
+	 * ① 目录输入直接提示失败（删除只针对文件）；
+	 * ② 路径不带扩展名时自动补 `.gnd`，文件不存在 = 目的已达，静默成功不弹失败；
+	 * ③ 文件树由 vault 的 delete 事件走防抖刷新，这里不再手动重算。
+	 */
+	async deleteFile(rawPath: string): Promise<void> {
+		// ① 先走 isDirectory：目录输入明确提示，不做静默假成功
+		const originalStat = await this.host.dataSource.stat(rawPath);
+		if (originalStat.exists && originalStat.isDirectory) {
+			this.host.notifier.notify(`仅支持删除文件：${rawPath}`);
+			return;
+		}
+
+		// ② 再走类型：补 .gnd 后缀
+		const fullPath = this.withGndExtension(normalizePath(rawPath.trim()));
+		const targetStat = await this.host.dataSource.stat(fullPath);
+		if (!targetStat.exists) {
+			return; // 文件不存在，静默成功（用户目的已达）
+		}
+
+		// ③ 删除（进系统回收站）
+		const ok = await this.host.fileWriter.trash(fullPath, true);
+		if (!ok) {
+			this.host.notifier.notify(`删除失败：${fullPath}`);
+			return;
+		}
+		this.logRuntime(`删除文件 | ${fullPath}`);
+
+		// ④ 若为 home，同步移除登记（含配色），各订阅视图自动同步
+		if (this.settings.homePaths.indexOf(fullPath) >= 0) {
+			await this.removeHome(fullPath);
+		}
+		this.host.notifier.notify(`已删除（进系统回收站）：${fullPath}`);
+	}
+
+	/** 工作台路径默认 gnd 类型：末段无扩展名时自动补 `.gnd` */
+	private withGndExtension(path: string): string {
+		if (path.length === 0) return path;
+		const last = path.slice(path.lastIndexOf("/") + 1);
+		return last.includes(".") ? path : `${path}.${GND_EXTENSION}`;
+	}
+
+	/** 持久化工作台文件树的折叠目录（不触发重扫描——纯 UI 状态） */
+	persistCollapsedDirs(dirs: readonly string[]): void {
+		const next = [...dirs].map((dir) => normalizePath(dir.trim())).filter((dir) => dir.length > 0);
+		this.settings = mergeSettings({ ...this.settings, workbenchCollapsed: next });
+		this.emit();
+		this.persist();
+	}
+
+	/**
+	 * 批量清理图片缓存记录：① 删缓存文件 → ② 删 data.json 记录 → ③ 更新图片废弃区 → ④ 提示无效。
+	 *
+	 * 缓存是一次性产物，直接删、不进回收站；返回实际移除数量；
+	 * 来源记录销毁后，下次扫描不会再出现在图片废弃区。
 	 */
 	async removeImageCache(urls: readonly string[]): Promise<number> {
 		if (urls.length === 0) return 0;
@@ -281,7 +352,7 @@ export class HomeController {
 		const removedItems = this.settings.imageCache.items.filter((item) => drop.has(item.url));
 		if (removedItems.length === 0) return 0;
 
-		// 1. 删除记录 + 2. 删除磁盘缓存文件（缓存是一次性产物，直接删、不进回收站）
+		// ① 删磁盘缓存文件 → ② 删 data.json 记录 → ③ 更新图片废弃区 → ④ 提示无效（见下）
 		for (const item of removedItems) {
 			await this.host.imageCache.remove(item.local);
 		}
@@ -290,7 +361,7 @@ export class HomeController {
 		await this.updateSettings({ imageCache: { kind: "image-cache", items: nextItems } });
 		this.logRuntime(`清理完成 | 共清理 ${removedItems.length} 条失效图片（含缓存文件）`);
 
-		// 4. 关联文档仍在、且其当前声明的网络封面仍然失效 → 提示文档图片路径无效（请修正文档）
+		// ④ 关联文档仍在、且其当前声明的网络封面仍然失效 → 提示文档图片路径无效（请修正文档）
 		const invalidDocs = new Set<string>();
 		for (const item of removedItems) {
 			for (const home of this.snapshot.homes) {
@@ -331,6 +402,10 @@ export class HomeController {
 			window.clearTimeout(this.refreshTimer);
 			this.refreshTimer = null;
 		}
+		if (this.scopedRefreshTimer !== null) {
+			window.clearTimeout(this.scopedRefreshTimer);
+			this.scopedRefreshTimer = null;
+		}
 		await this.refreshChain;
 		await this.saveChain;
 	}
@@ -343,7 +418,8 @@ export class HomeController {
 	/**
 	 * 调试框「刷新」：只读重跑 `.gnd` 解析，重建诊断输出。
 	 *
-	 * - 范围与「扫描时的诊断收集」**完全一致**（全库 `.gnd` 索引 + home 跨文件校验 + 登记态校验）：
+	 * - 范围与「扫描时的诊断收集」**近似一致**（全库 `.gnd` 索引 + home 跨文件校验 + 登记态校验，
+	 *   home 集合取上次扫描快照，与实时登记可能有瞬时偏差，登记变更会立即触发重扫补齐）：
 	 *   不做小范围重跑，否则刷新后诊断会比当前显示的更少，看起来像信息丢失；
 	 * - 串行读取，单文件异常隔离为该文件的 error，不影响其余文件；
 	 * - 只更新诊断输出：**不写 `data.json`、不改 frontmatter、不重新求解配色、不监听 vault 事件**。
@@ -358,6 +434,8 @@ export class HomeController {
 			const { items, scanned } = await this.collectDiagnostics(this.snapshot.homes);
 			this.diagnostics = items;
 			this.logRuntime(`诊断刷新完成 | 共解析 ${scanned} 个 .gnd`);
+			// 诊断路径同样只登记待填充封面（不联网），收尾时后台补下载
+			this.fillPendingCovers().catch(() => {});
 			return items;
 		} finally {
 			this.refreshing = false;
@@ -371,16 +449,40 @@ export class HomeController {
 	}
 
 	private async scan(): Promise<void> {
-		this.coverIssues.clear();
-		const paths = this.settings.homePaths.slice();
+		// 网络封面失败记忆是会话级的：这里不清 coverIssues（失败 URL 本会话不重试）
+		// homePaths 收窄：目录条目（工作台新增产生）只当作用域根，不是主页——不进解析、不进诊断、不出卡片
+		const scannedDirEntries = new Set<string>();
+		const homeEntries: string[] = [];
+		const homeStat = new Map<string, { exists: boolean }>();
+		for (const entry of this.settings.homePaths) {
+			const stat = await this.host.dataSource.stat(entry);
+			homeStat.set(entry, { exists: stat.exists });
+			if (stat.exists && stat.isDirectory) scannedDirEntries.add(entry);
+			else homeEntries.push(entry);
+		}
+		this.dirEntries = scannedDirEntries;
+
 		const homes: HomeDocSnapshot[] = [];
-		for (const path of paths) {
-			// 单主页隔离：读取异常按缺失处理，不让一个坏文件拖垮整次扫描
+		// 本次扫描的 home 文本缓存：collectDiagnostics 复用同一份文本，避免同一文件读两遍（scan 结束即丢弃）
+		const homeTexts = new Map<string, string>();
+		const missingHomePaths: string[] = [];
+		for (const path of homeEntries) {
+			// 悬空登记是惰性的：解析零输出；但路径**进派生废弃区**（主页管理可见、可一键清理）
+			if (!homeStat.get(path)!.exists) {
+				missingHomePaths.push(path);
+				continue;
+			}
+			// 单主页隔离：读取异常按跳过处理，不让一个坏文件拖垮整次扫描
 			try {
-				homes.push(await this.readHome(path));
+				const text = await this.host.dataSource.read(path);
+				if (text === null) continue;
+				const home = await this.readHome(path, text);
+				if (home !== null) {
+					homes.push(home);
+					homeTexts.set(path, text);
+				}
 			} catch (err) {
 				this.logRuntime(`主页读取失败 | ${path} | ${String(err)}`);
-				homes.push(this.missingHome(path));
 			}
 		}
 
@@ -388,6 +490,8 @@ export class HomeController {
 		const projectColors: Record<string, string> = { ...this.settings.projectColors };
 		const alive = new Set<string>();
 		for (const home of homes) {
+			// 只有可渲染的 home（ok）参与配色对齐；invalid 不渲染看板，其 works 不占键
+			if (home.status !== "ok") continue;
 			const list = home.works.map((work) => work.filePath);
 			for (const workPath of list) alive.add(workPath);
 			const aligned = normalizeCardColors(list, projectColors);
@@ -404,35 +508,116 @@ export class HomeController {
 
 		// 诊断只在调试开关开启时收集（全库 .gnd 索引，成本高于普通扫描）
 		this.diagnostics = this.settings.debugEnabled
-			? (await this.collectDiagnostics(homes)).items
+			? (await this.collectDiagnostics(homes, homeTexts)).items
 			: [];
 
-		// 图片废弃区：**只由 data.json 的缓存记录驱动**。失效 = ① 来源文档被删；
-		// ② 文档已导入但不再声明该 URL（改链接后的孤儿记录）；③ 文档已导入、URL 未变但封面重新加载失败。
-		// 与「实时下载失败不建卡」的分界：没有缓存记录的 URL 下载失败 → 只出诊断与空槽，不进废弃区；
-		// 已有缓存记录、重新加载失败 → 进废弃区。文档存在但未被导入：默认忽略。
-		// 这样「清理」删掉记录后卡片不会复现；文档里仍失效的链接只在清理时提示。
+		// 图片废弃区：**只由 data.json 的缓存记录驱动**，失效 = ① local 磁盘不存在；
+		// ② url 不再被任何文档引用（孤儿记录）。实时下载失败不建卡，只出诊断与空槽。
 		const discardedImages: BoardDiscardedImage[] = [];
-		const worksByPath = new Map<string, WorkDocEntry>();
+		const declaredUrls = new Set<string>();
 		for (const home of homes) {
-			for (const work of home.works) worksByPath.set(work.filePath, work);
+			for (const work of home.works) {
+				if (work.remoteUrl !== null) declaredUrls.add(work.remoteUrl);
+			}
 		}
 		for (const item of this.settings.imageCache.items) {
-			const sourceStat = await this.host.dataSource.stat(item.source);
-			if (!sourceStat.exists) {
-				discardedImages.push({ url: item.url, source: item.source });
-				continue;
-			}
-			const work = worksByPath.get(item.source);
-			if (work === undefined) continue; // 文档存在但未导入：默认忽略
-			if (work.remoteUrl !== item.url || work.imageUrl === null) {
+			if (!(await this.host.imageCache.exists(item.local)) || !declaredUrls.has(item.url)) {
 				discardedImages.push({ url: item.url, source: item.source });
 			}
 		}
 		this.discardedImages = discardedImages;
 
+		await this.refreshScopedFiles();
+		this.missingHomePaths = missingHomePaths;
+
 		this.snapshot = { homes, scannedAt: Date.now() };
 		this.emit();
+		// 后台填充本次扫描欠下的网络封面：不阻塞扫描返回（启动不再被网络卡住）
+		this.fillPendingCovers().catch(() => {});
+	}
+
+	/**
+	 * 工作台文件树作用域，**双相刷新**：
+	 *
+	 * ① 快照相——`vault.getFiles()`（毫秒级），立即应用并渲染；
+	 * ② 物理相——后台 `adapter.list` 递归走作用域根，得到磁盘真值；
+	 *    只对**差集**（快照有物理无 = 幽灵 / 快照无物理有 = 新增）做二次 `exists`
+	 *    确认（并发），一致则不动。竞态由版本号封死（对账期间有新快照则放弃本批）。
+	 */
+	private async refreshScopedFiles(): Promise<void> {
+		const roots = [...this.scopeRoots()];
+		const allFiles = await this.host.dataSource.listFiles();
+		const snapshot = filesInScope(allFiles, roots);
+		this.scopedFiles = snapshot;
+		this.scopedFilesVersion += 1;
+		// 物理相对账不阻塞本批：失败只丢一条日志（链两端补 catch，防未处理拒绝）
+		this.reconcileScopedFiles(roots, snapshot, this.scopedFilesVersion).catch((err) => {
+			this.logRuntime(`工作台对账失败 | ${String(err)}`);
+		});
+	}
+
+	private scopeRoots(): string[] {
+		const roots = new Set<string>();
+		for (const entry of this.settings.homePaths) {
+			const root = this.dirEntries.has(entry) ? entry : dirname(entry);
+			if (root.length > 0) roots.add(root);
+		}
+		return [...roots];
+	}
+
+	/** 物理相：adapter.list 逐层递归（并发），返回作用域根下的全部 `.gnd` */
+	private async walkPhysicalGnd(root: string): Promise<string[]> {
+		const out: string[] = [];
+		let frontier = [root];
+		while (frontier.length > 0) {
+			const listings = await Promise.all(frontier.map((dir) => this.host.dataSource.listDir(dir)));
+			const next: string[] = [];
+			for (const listing of listings) {
+				for (const file of listing.files) {
+					if (file.toLowerCase().endsWith(".gnd")) out.push(file);
+				}
+				next.push(...listing.folders);
+			}
+			frontier = next;
+		}
+		return out;
+	}
+
+	/** 物理相对账：差集二次确认后应用（快照有物理无 → 幽灵移除；物理有快照无 → 新增加入） */
+	private async reconcileScopedFiles(roots: readonly string[], snapshot: readonly string[], version: number): Promise<void> {
+		const physicalLists = await Promise.all(roots.map((root) => this.walkPhysicalGnd(root)));
+		if (version !== this.scopedFilesVersion) return; // 期间有新快照，放弃本批
+		const physicalSet = new Set(physicalLists.flat());
+		const snapshotSet = new Set(snapshot);
+		const ghosts = [...snapshotSet].filter((path) => !physicalSet.has(path));
+		const additions = [...physicalSet].filter((path) => !snapshotSet.has(path));
+		if (ghosts.length === 0 && additions.length === 0) return;
+
+		// 差集通常极小：逐条 exists 二次确认（并发），封死快照与物理的瞬时竞态
+		const [ghostConfirmed, addConfirmed] = await Promise.all([
+			Promise.all(ghosts.map(async (path) => ((await this.host.dataSource.exists(path)) ? null : path))),
+			Promise.all(additions.map(async (path) => ((await this.host.dataSource.exists(path)) ? path : null))),
+		]);
+		if (version !== this.scopedFilesVersion) return;
+		const next = new Set(this.scopedFiles);
+		for (const ghost of ghostConfirmed) if (ghost !== null) next.delete(ghost);
+		for (const added of addConfirmed) if (added !== null) next.add(added);
+		this.scopedFiles = [...next].sort();
+		this.emit();
+	}
+
+	/**
+	 * 非 `.gnd` 文件的创建 / 删除 / 重命名 → 只重算工作台文件树（300ms 防抖）。
+	 *
+	 * 全量 scan 会重新解析登记 `.gnd` 并重盖诊断章，纯文件增删犯不上；
+	 * `.gnd` 事件仍走 `scheduleRefresh()` 全量刷新。
+	 */
+	scheduleScopedRefresh(): void {
+		if (this.scopedRefreshTimer !== null) window.clearTimeout(this.scopedRefreshTimer);
+		this.scopedRefreshTimer = window.setTimeout(() => {
+			this.scopedRefreshTimer = null;
+			void this.refreshScopedFiles().then(() => this.emit());
+		}, REFRESH_DELAY);
 	}
 
 	/**
@@ -443,7 +628,10 @@ export class HomeController {
 	 */
 	private diagnosticPaths(): string[] {
 		return Array.from(
-			new Set([...this.settings.homePaths, ...Object.keys(this.settings.projectColors)]),
+			new Set([
+				...this.settings.homePaths.filter((path) => !this.dirEntries.has(path)),
+				...Object.keys(this.settings.projectColors),
+			]),
 		).sort();
 	}
 
@@ -451,9 +639,12 @@ export class HomeController {
 	 * 收集诊断：登记 `.gnd` 的文本诊断 + 同目录唯一性 + home 的跨文件校验 + 登记态校验。
 	 *
 	 * 范围见 `diagnosticPaths()`；扫描与调试框「刷新」共用本方法，保证两者结果一致。
+	 * `cachedTexts` 为扫描阶段已读过的 home 文本（复用同一份，避免同一文件读两遍）；
+	 * 调试框「刷新」不传 → 全部兜底现读（只读重跑，本就该读最新磁盘内容）。
 	 */
 	private async collectDiagnostics(
 		homes: readonly HomeDocSnapshot[],
+		cachedTexts: ReadonlyMap<string, string> = new Map(),
 	): Promise<{ items: Diagnostic[]; scanned: number }> {
 		const result: Diagnostic[] = [];
 		// 同目录唯一性需要跨文件比对，先收集「路径 + gnd_type」再统一判定
@@ -463,21 +654,8 @@ export class HomeController {
 		for (const path of paths) {
 			// 单文件隔离：读失败只报该文件一条诊断，不影响其余文件
 			try {
-				const text = await this.host.dataSource.read(path);
-				if (text === null) {
-					// 缺失的登记主页由下方「登记态校验」统一报一条，这里只报未被登记的缺失文件
-					if (this.settings.homePaths.indexOf(path) >= 0) continue;
-					result.push({
-						level: "warning",
-						code: "FILE_MISSING",
-						path,
-						message: "文件不存在",
-						detail: `登记的文件不存在：${path}`,
-						line: null,
-						target: null,
-					});
-					continue;
-				}
+				const text = cachedTexts.get(path) ?? (await this.host.dataSource.read(path));
+				if (text === null) continue; // 悬空登记惰性：零输出，不报错不清理
 				await this.diagnoseFile(path, text, result);
 				entries.push({ filePath: path, gndType: splitFrontmatter(text).frontmatter.gndType });
 			} catch (err) {
@@ -496,17 +674,7 @@ export class HomeController {
 		for (const item of checkDirectoryUniqueness(entries)) result.push(item);
 
 		for (const home of homes) {
-			if (home.status === "missing") {
-				result.push({
-					level: "warning",
-					code: "FILE_MISSING",
-					path: home.filePath,
-					message: "主页文件不存在",
-					detail: `登记为主页，但文件已丢失：${home.filePath}`,
-					line: null,
-					target: null,
-				});
-			} else if (home.status === "invalid") {
+			if (home.status === "invalid") {
 				result.push({
 					level: "warning",
 					code: "HOME_TYPE_INVALID",
@@ -599,8 +767,7 @@ export class HomeController {
 		if (raw === null) return;
 		// 网络封面：流水线失败明细（下载 / 校验 / 解析 / 写盘）以 error 出诊断，挂在声明封面的 project 上
 		if (isHttpUrl(raw)) {
-			const issue = this.coverIssues.get(`${path}
-${raw}`);
+			const issue = this.coverIssues.get(raw);
 			if (issue === undefined) return;
 			sink.push({
 				level: "error",
@@ -641,33 +808,18 @@ ${raw}`);
 		});
 	}
 
-	/** 读取失败 / 文件缺失时的主页占位快照 */
-	private missingHome(filePath: string): HomeDocSnapshot {
-		return {
-			filePath,
-			status: "missing",
-			gndType: null,
-			created: null,
-			modified: null,
-			modifiedAt: 0,
-			welcome: null,
-			whereFields: [],
-			works: [],
-		};
-	}
-
-	private async readHome(filePath: string): Promise<HomeDocSnapshot> {
+	private async readHome(filePath: string, cachedText?: string): Promise<HomeDocSnapshot | null> {
+		// 读取失败（含占位文件等物理不可读）按悬空处理：零输出
+		const text = cachedText ?? (await this.host.dataSource.read(filePath));
+		if (text === null) return null;
 		const stat = await this.host.dataSource.stat(filePath);
-		if (!stat.exists) return this.missingHome(filePath);
-
-		const text = (await this.host.dataSource.read(filePath)) ?? "";
 		const { frontmatter, body } = splitFrontmatter(text);
 		const variables = parseVariables(body);
 		const whereFields = parseWhere(body);
 
 		return {
 			filePath,
-			status: classifyHome(true, frontmatter.gndType),
+			status: classifyHome(frontmatter.gndType),
 			gndType: frontmatter.gndType,
 			created: frontmatter.gndCreated,
 			modified: frontmatter.gndModi,
@@ -737,7 +889,8 @@ ${raw}`);
 	 *
 	 * 本地路径：归一化 → 交给宿主换算资源地址。
 	 * http/https：查 `imageCache` 记录（URL 为键），有记录且缓存文件在 → 直接用本地缓存；
-	 * 否则走五步流水线：下载 → 魔数校验 → 解码重绘 → 摘要 → 落盘写记录。
+	 * 否则**登记待后台填充**（`pendingCovers`），扫描阶段不联网；下载由 `fillPendingCovers`
+	 * 在扫描结束后跑五步流水线（下载 → 魔数校验 → 解码重绘 → 摘要 → 落盘写记录）。
 	 * 任何失败都退回无封面（渲染空槽），不中断看板；失败详情记入 `coverIssues`，
 	 * 由 `diagnoseCover()` 以 **error** 级别出诊断（封面组统一 error）。
 	 */
@@ -752,7 +905,7 @@ ${raw}`);
 		return { image, imageUrl: this.host.dataSource.resolveResource(image), remoteUrl: null };
 	}
 
-	/** 网络封面：缓存优先，未命中则「下载 → 校验 → 重绘 → 摘要 → 落盘」五步流水线 */
+	/** 网络封面：缓存优先；未命中则登记待后台填充，**扫描阶段零网络**（不阻塞启动） */
 	private async resolveRemoteCover(
 		url: string,
 		sourcePath: string,
@@ -767,12 +920,24 @@ ${raw}`);
 			};
 		}
 
-		const fail = (code: CoverFailureCode, message: string, detail: string): Pick<WorkDocEntry, "image" | "imageUrl" | "remoteUrl"> => {
-			this.coverIssues.set(`${sourcePath}\n${url}`, { code, message, detail, url, source: sourcePath });
+		// 会话级失败记忆：本会话已失败过的 URL 不再重试，直接空槽（避免每次扫描重复卡网络）
+		if (this.coverIssues.has(url)) {
 			return { image: null, imageUrl: null, remoteUrl: url };
+		}
+
+		// 缓存未命中：登记待 `fillPendingCovers` 后台下载；本次看板先渲染空槽，填充完成后自动补上
+		this.pendingCovers.set(url, { url, source: sourcePath });
+		return { image: null, imageUrl: null, remoteUrl: url };
+	}
+
+	/** 网络封面五步流水线：下载 → 魔数校验 → 解码重绘 → 摘要 → 落盘写记录；成功返回 true */
+	private async runCoverPipeline(url: string, sourcePath: string): Promise<boolean> {
+		const fail = (code: CoverFailureCode, message: string, detail: string): false => {
+			this.coverIssues.set(url, { code, message, detail, url });
+			return false;
 		};
 
-		// 1. 下载（requestUrl，不受 CORS 限制）
+		// 1. 下载（requestUrl，不受 CORS 限制；宿主侧自带超时）
 		const response = await this.host.imageCache.fetch(url);
 		if (response.bytes === null || response.status < 200 || response.status >= 300) {
 			if (response.status === 404) {
@@ -808,12 +973,28 @@ ${raw}`);
 		if (!(await this.host.imageCache.write(relPath, redrawn))) {
 			return fail("COVER_WRITE_FAILED", "封面写盘失败", `封面缓存写盘失败：${relPath}`);
 		}
-		this.coverIssues.delete(`${sourcePath}\n${url}`);
-		const nextItems = items.filter((item) => item.url !== url);
+		this.coverIssues.delete(url);
+		const nextItems = this.settings.imageCache.items.filter((item) => item.url !== url);
 		nextItems.push({ url, hash, local: relPath, source: sourcePath, updated: new Date().toISOString() });
 		this.settings.imageCache = { kind: "image-cache", items: nextItems };
 		this.persist();
-		return { image: relPath, imageUrl: this.host.dataSource.resolveResource(relPath), remoteUrl: url };
+		return true;
+	}
+
+	/**
+	 * 后台填充待下载的网络封面：逐个跑五步流水线（串行，宿主侧自带超时），
+	 * 成功落盘的封面追加一次刷新接进快照（此时缓存命中，纯 IO 不联网）。
+	 * 调用方 fire-and-forget；失败明细进 `coverIssues`，本会话不再重试。
+	 */
+	private async fillPendingCovers(): Promise<void> {
+		const pending = [...this.pendingCovers.values()];
+		this.pendingCovers.clear();
+		if (pending.length === 0) return;
+		let wired = false;
+		for (const item of pending) {
+			if (await this.runCoverPipeline(item.url, item.source)) wired = true;
+		}
+		if (wired) void this.refresh();
 	}
 
 	/** 记一条运行日志（系统行）；**追加在尾部（时间正序，最新在最下）**，超出上限丢最旧的 */

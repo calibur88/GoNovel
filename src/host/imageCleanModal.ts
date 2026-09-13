@@ -4,8 +4,8 @@ import type { BoardDiscardedImage } from "../types";
 /**
  * 图片缓存清理弹窗：列出「图片废弃区」的全部缓存记录（URL / 来源 gnd / 缓存文件路径）。
  *
- * 默认全勾、可逐条取消；确认后由调用方**只清 `data.json` 里的记录**——
- * `.gn-data/image/` 下的图片文件一律不动。
+ * 默认全勾、可逐条取消；确认后由调用方**删记录 + 删缓存文件**——
+ * `.gn-data/image/` 下的缓存图片文件一并删除（缓存是一次性产物，直接删不进回收站）。
  */
 export class ImageCleanModal extends Modal {
 	private readonly inputs: Array<{ url: string; input: HTMLInputElement }> = [];

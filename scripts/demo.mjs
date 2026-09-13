@@ -296,8 +296,6 @@ const DATA_JSON = {
 		"小说项目/都市悬疑/都市悬疑.gnd": "#F5D0E8",
 		"调试样例/作品甲/作品甲.gnd": "#FFE7A0",
 	},
-	// 废弃区（演示默认留空）：与 homePaths 互斥，只记录不删文件；要恢复重新登记即可。
-	discardedPaths: [],
 	// 网络封面图片缓存仓库（演示默认留空）：样例封面都是库内路径，不产生网络缓存记录。
 	imageCache: { kind: "image-cache", items: [] },
 };
@@ -399,7 +397,6 @@ function reportImages(label, { copied, skipped, missing }) {
  * 校验 DATA_JSON 的登记态，挡住三类此前踩过的坑：
  *   1. `homeColors` 的键必须与 `homePaths` 一一对应（视图按 homePaths 顺序取色）；
  *   2. 主页卡与作品卡的配色序列中，相邻两张不得同色（插件的唯一配色约束）；
- *   3. `discardedPaths` 必须是字符串数组，且与 `homePaths` 互斥（同一路径不能既登记又废弃）。
  */
 function validateDataJson() {
 	const problems = [];
@@ -409,16 +406,6 @@ function validateDataJson() {
 		problems.push(
 			`homeColors 的键必须与 homePaths 同序等长\n        homePaths   = ${JSON.stringify(DATA_JSON.homePaths)}\n        homeColors  = ${JSON.stringify(homeKeys)}`,
 		);
-	}
-
-	const discarded = DATA_JSON.discardedPaths;
-	if (!Array.isArray(discarded) || discarded.some((item) => typeof item !== "string" || item.trim().length === 0)) {
-		problems.push(`discardedPaths 必须是字符串数组，实际 = ${JSON.stringify(discarded)}`);
-	} else {
-		const registered = new Set(DATA_JSON.homePaths);
-		for (const item of discarded) {
-			if (registered.has(item)) problems.push(`废弃区与登记表互斥，但 ${item} 同时出现在两处`);
-		}
 	}
 
 	const bad = (label, keys) => {

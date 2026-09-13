@@ -20,7 +20,11 @@ export function stripComment(line: string): string {
 
 /** 自读解析 frontmatter（不依赖宿主 metadataCache） */
 export function parseFrontmatter(text: string): GndFrontmatter {
-	const match = FRONTMATTER_RE.exec(text);
+	return parseFrontmatterMatch(FRONTMATTER_RE.exec(text));
+}
+
+/** 由正则匹配结果解析 frontmatter（无匹配返回空结果） */
+function parseFrontmatterMatch(match: RegExpExecArray | null): GndFrontmatter {
 	if (!match) return emptyFrontmatter();
 	const result = emptyFrontmatter();
 	result.present = true;
@@ -46,12 +50,10 @@ export function parseFrontmatter(text: string): GndFrontmatter {
 	return result;
 }
 
-/** 拆分 frontmatter 与正文 */
+/** 拆分 frontmatter 与正文（frontmatter 正则只扫描一次） */
 export function splitFrontmatter(text: string): { frontmatter: GndFrontmatter; body: string } {
-	const frontmatter = parseFrontmatter(text);
 	const match = FRONTMATTER_RE.exec(text);
-	const body = match ? text.slice(match[0].length) : text;
-	return { frontmatter, body };
+	return { frontmatter: parseFrontmatterMatch(match), body: match ? text.slice(match[0].length) : text };
 }
 
 /**
@@ -97,7 +99,6 @@ export function parseKeywordBlocks(body: string): Map<string, string[]> {
  */
 export function parseVariables(body: string): Record<string, string> {
 	const variables: Record<string, string> = {};
-	const names: string[] = [];
 	let current: string | null = null;
 	let buffer: string[] = [];
 
@@ -109,7 +110,6 @@ export function parseVariables(body: string): Record<string, string> {
 				variables[current] = `${variables[current]}\n${value}`;
 			} else {
 				variables[current] = value;
-				names.push(current);
 			}
 		}
 		current = null;
@@ -135,13 +135,17 @@ export function parseVariables(body: string): Record<string, string> {
 	return variables;
 }
 
-/** 提取欢迎词：`[欢迎词]` 优先，兼容 `[WELCOME]`（大小写不敏感） */
+/**
+ * 提取欢迎词：`[欢迎词]` 优先；`[WELCOME]` / `[Welcome]` 等大小写变体同样命中。
+ *
+ * 注意：**命令**（`**SELECT**` / `**WHERE**`）仍严格大写匹配，只有 `[变量]` 名
+ * 走大小写不敏感——命令是关键字，变量是名字，规则不同。
+ */
 export function extractWelcome(variables: Record<string, string>): string | null {
 	const direct = variables["欢迎词"];
 	if (typeof direct === "string" && direct.trim().length > 0) return direct.trim();
-	for (const key of Object.keys(variables)) {
-		if (key.toUpperCase() === "WELCOME") {
-			const value = variables[key];
+	for (const [name, value] of Object.entries(variables)) {
+		if (name.toLowerCase() === "welcome") {
 			if (value.trim().length > 0) return value.trim();
 		}
 	}

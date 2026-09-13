@@ -8,7 +8,7 @@ export interface HomeBoardHandlers {
 	onSearch(query: string): void;
 	/** 清空搜索：清除关键字，恢复完整列表 */
 	onClearSearch(): void;
-	/** 清理：弹窗列出「图片废弃区」的缓存记录，确认后只清 data.json 记录（图片文件不动） */
+	/** 清理：弹窗列出「图片废弃区」的缓存记录，确认后删记录 + 删缓存文件（关联文档仍失效时另行提示） */
 	onCleanImages(): void;
 }
 
@@ -40,7 +40,7 @@ function buildToolbar(env: DomEnv, handlers: HomeBoardHandlers, searchText: stri
 	const cleanBtn = el(env, "button", {
 		cls: "gn-btn gn-btn--clean",
 		text: "清理",
-		attr: { type: "button", title: "清理图片缓存记录（只清记录，图片文件保留）" },
+		attr: { type: "button", title: "清理图片缓存记录（删记录 + 删缓存文件）" },
 	});
 	cleanBtn.addEventListener("click", (event) => {
 		event.stopPropagation();

@@ -4,13 +4,13 @@
 > 使用者可以在自己的 Obsidian 仓库里照抄语法，验收者可以据此对照预期现象。
 > 本地验收请去 `test-local/`（带 `-local` 字样的本地目录），两处内容由同一个脚本生成、内容完全一致。
 >
-> **文档定位**：示例库操作手册 ｜ **版本**：v0.6.0（随插件）
+> **文档定位**：示例库操作手册 ｜ **版本**：v0.7.0（随插件）
 > **同步铁律**：本目录的 `.gnd` **由脚本生成**，改样例必须改 `scripts/demo.mjs` 再重新生成；手改会被覆盖。
 
 > **项目速记**：
-> - `go-novel`：Obsidian 小说管理插件（主页管理视图 + 小说项目主页视图）；
+> - `go-novel`：Obsidian 小说管理插件（主页管理视图 + 小说项目主页管理视图）；
 > - 插件只管 `.gnd`：`.gnd` 注册为 markdown，编辑／阅读／实时预览交给 Obsidian 原生，vault 里的 `.md` 不归插件管理；
-> - 插件**不代管 `.gnd` 的打开**：只有两个视图由插件自己打开 —— 左侧 Ribbon 的「gn 主页管理」打开管理视图，点卡片打开小说项目看板；
+> - 插件**不代管 `.gnd` 的打开**：`.gnd` 从任何文件入口（原生文件列表 / 工作台文件树）打开都是 Obsidian 原生 markdown；只有两个视图由插件自己打开 —— 左侧 Ribbon 的「gn 工作台」打开工作台（工作台 ① 进管理视图），点管理卡片打开小说项目主页管理看板；
 > - 完整功能见 [README](../README.md)。
 
 ## 示例数据（目录名）
@@ -65,7 +65,6 @@
 | `homePaths` | `调试样例/03-导入路径错误.gnd` | 错例主页，看板出 0 张作品卡 |
 | `homePaths` | `调试样例/05-字段缺失.gnd` | 错例主页，看板出 1 张作品卡 |
 | `projectColors` | `大宋仙途` / `都市悬疑` / `作品甲` | 前两者来自主页，`作品甲` 来自 `05` |
-| `discardedPaths` | （空） | 废弃区：默认留空；「废弃」只移出登记、**文件保留**，要恢复重新登记即可 |
 | `imageCache` | （空仓库） | 网络封面图片缓存：`{ kind: "image-cache", items: [{url, hash, local, source, updated}] }`；样例封面都是库内路径，故 items 留空 |
 
 调试框里应**恰好**出现这 7 行（行格式 `[级别] 错误类型:文件名`，同文件同类型多条在行尾计数）：
@@ -203,7 +202,6 @@ gnd_created: 2026-09-12
     "小说项目/都市悬疑/都市悬疑.gnd": "#F5D0E8",
     "调试样例/作品甲/作品甲.gnd": "#FFE7A0"
   },
-  "discardedPaths": [],
   "imageCache": {
     "kind": "image-cache",
     "items": []
@@ -212,7 +210,7 @@ gnd_created: 2026-09-12
 
 命中：覆盖到 `.obsidian/plugins/go-novel/data.json` 后重载插件，管理视图出现 **3** 张主页卡、看板共出 **3** 张作品卡，相邻卡片配色互不相同。
 
-说明：`homeColors` 的键与 `homePaths` 同序等长；`projectColors` 的键必须来自主页实际导入的作品，插件会在每次扫描时裁剪孤儿键、补齐缺失色并对齐相邻同色；`discardedPaths` 是废弃区，与 `homePaths` 互斥（同一路径不会既登记又废弃），「清理」只清记录、不删文件。
+说明：`homeColors` 的键与 `homePaths` 同序等长；`projectColors` 的键必须来自主页实际导入的作品，插件会在每次扫描时裁剪孤儿键、补齐缺失色并对齐相邻同色；主页管理视图的「清理」清空派生废弃区（`homePaths` 中磁盘已不存在的路径），只动登记、不删文件。
 
 ## 操作
 
@@ -242,7 +240,6 @@ node scripts/demo.mjs --target <dir>   # 指定同步目标（默认 test-local�
 封面素材由 `IMAGES` 定义、从项目根的 `assets/cover/` 复制（源缺失只提示、不报错）。`assets/` 整个目录在 `.gitignore` 里，
 `--check` 不比对它 —— 你可以随意换成自己的图，`--sync` 也不会覆盖已存在的文件。
 
-生成/自检时会跑两道守卫：`validateDataJson()` 校验 `homePaths` 与 `homeColors` 同序等长、相邻配色不同，
-且 `discardedPaths` 为字符串数组并与 `homePaths` 互斥；
+生成/自检时会跑两道守卫：`validateDataJson()` 校验 `homePaths` 与 `homeColors` 同序等长、相邻配色不同；
 `validateCovers()` 校验每个 `gnd_image` 要么命中 `IMAGES`、要么登记在 `MISSING_COVERS` 里
 （故意做封面错例的两个文件）—— 免得把写错的图片路径误当成「有意缺失的错例」。

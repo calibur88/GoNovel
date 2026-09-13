@@ -31,27 +31,19 @@ export function removeHomePath(paths: readonly string[], rawPath: string): strin
 	return paths.filter((item) => item !== path);
 }
 
-/** 是否已登记 */
-export function hasHomePath(paths: readonly string[], rawPath: string): boolean {
-	return paths.indexOf(normalizePath(rawPath)) >= 0;
-}
-
 /**
- * 主页状态判定。
+ * 主页状态判定（调用前保证文件存在——悬空登记在扫描层就已零输出跳过）。
  *
- * - 文件不存在 → `missing`
- * - 存在但 `gnd_type` 非 `home`（含缺失）→ `invalid`
+ * - `gnd_type` 非 `home`（含缺失）→ `invalid`
  * - 否则 → `ok`
  */
-export function classifyHome(exists: boolean, gndType: string | null): HomeStatus {
-	if (!exists) return "missing";
+export function classifyHome(gndType: string | null): HomeStatus {
 	if (gndType !== "home") return "invalid";
 	return "ok";
 }
 
 /** 状态角标文案 */
 export function homeStatusLabel(status: HomeStatus): string {
-	if (status === "missing") return "文件不存在";
 	if (status === "invalid") return "非 home 类型";
 	return "";
 }

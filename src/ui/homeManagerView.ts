@@ -1,4 +1,4 @@
-import type { DiscardedCardViewModel, HomeCardViewModel, HomeManagerViewModel } from "../types";
+import type { HomeCardViewModel, HomeManagerViewModel, MissingCardViewModel } from "../types";
 import { el, mount, type DomEnv } from "./dom";
 import { matchesSearch } from "./search";
 
@@ -8,15 +8,15 @@ export interface HomeManagerHandlers {
 	onOpenBoard(filePath: string): void;
 	/** 刷新：重读 data.json（真相源）后重扫重渲 */
 	onRefresh(): void;
-	/** 清理：弹窗清理「已废弃」与「已丢失」记录（只清记录，不删文件） */
+	/** 清理：弹窗列出「已失效」登记（磁盘上不存在的登记路径），确认后从登记移除（不删文件） */
 	onClean(): void;
-	/** 登记：弹窗从库中已有 .gnd 里挑选（只登记，不创建文件） */
+	/** 登记：弹文本输入框添加新 home（默认 .gnd、可省略后缀；路径暂不存在也允许——会进派生废弃区） */
 	onAdd(): void;
-	/** 切换废弃模式（显示／隐藏卡片 ✕） */
+	/** 切换移除登记模式（显示／隐藏卡片 ✕） */
 	onToggleDiscard(): void;
-	/** 废弃单卡：移出登记、进废弃区（文件保留） */
-	onDiscardCard(filePath: string): void;
-	/** 搜索：只显示命中的卡片，未命中隐藏（登记＋废弃都生效） */
+	/** 移除登记单卡：移出登记（文件保留） */
+	onRemoveCard(filePath: string): void;
+	/** 搜索：只显示命中的卡片，未命中隐藏（登记＋已失效都生效） */
 	onSearch(query: string): void;
 	/** 清空搜索：清除关键字，恢复全部卡片 */
 	onClearSearch(): void;
@@ -24,7 +24,7 @@ export interface HomeManagerHandlers {
 
 /** 管理视图渲染期状态（非持久化） */
 export interface HomeManagerState {
-	/** 废弃模式：卡片显示 ✕ */
+	/** 移除登记模式：卡片显示 ✕ */
 	discardMode: boolean;
 	/** 搜索关键字：只显示命中的卡片 */
 	searchText: string;
@@ -37,7 +37,7 @@ const NOTE_PLACEHOLDER = "（未设置管理语，可在插件设置中配置）
  * 渲染主页管理视图：
  *
  * 固定头部（标题 → 管理语 → 操作行：四按钮居左、搜索栏居右）＋ 可滚动主体
- * （「已登记」卡片网格 ／ 「已废弃」卡片网格，搜索时只显示命中卡片）。
+ * （「已登记」卡片网格 ／ 「已失效」卡片网格，搜索时只显示命中卡片）。
  */
 export function renderHomeManager(
 	env: DomEnv,
@@ -62,7 +62,7 @@ export function renderHomeManager(
 
 	const body = el(env, "div", { cls: "gn-manager-body" }, [
 		buildRegisteredSection(env, vm, handlers, state),
-		buildDiscardedSection(env, vm, state.searchText),
+		buildMissingSection(env, vm, state.searchText),
 	]);
 
 	mount(env, container, [el(env, "div", { cls: "gn-manager" }, [header, body])]);
@@ -73,7 +73,7 @@ export function renderHomeManager(
 	}
 }
 
-/** 操作行：左侧四按钮（刷新 / 清理 / 登记 / 废弃），右侧搜索栏，左右分布 */
+/** 操作行：左侧四按钮（刷新 / 清理 / 登记 / 移除登记），右侧搜索栏，左右分布 */
 function buildActions(env: DomEnv, handlers: HomeManagerHandlers, state: HomeManagerState): HTMLElement {
 	const button = (label: string, cls: string, onClick: () => void): HTMLElement => {
 		const node = el(env, "button", { cls: `gn-btn ${cls}`, text: label, attr: { type: "button" } });
@@ -89,7 +89,7 @@ function buildActions(env: DomEnv, handlers: HomeManagerHandlers, state: HomeMan
 			button("刷新", "gn-btn--refresh", handlers.onRefresh),
 			button("清理", "gn-btn--clean", handlers.onClean),
 			button("登记", "gn-btn--add", handlers.onAdd),
-			button(state.discardMode ? "完成" : "废弃", "gn-btn--discard", handlers.onToggleDiscard),
+			button(state.discardMode ? "完成" : "移除登记", "gn-btn--discard", handlers.onToggleDiscard),
 		]),
 		buildSearchBar(env, handlers, state.searchText),
 	]);
@@ -123,24 +123,24 @@ function buildRegisteredSection(
 	]);
 }
 
-/** 「已废弃」分区：卡片网格（搜索时只显示命中项） */
-function buildDiscardedSection(env: DomEnv, vm: HomeManagerViewModel, searchText: string): HTMLElement {
+/** 「已失效」分区：卡片网格（搜索时只显示命中项） */
+function buildMissingSection(env: DomEnv, vm: HomeManagerViewModel, searchText: string): HTMLElement {
 	let body: HTMLElement;
-	if (vm.discarded.length === 0) {
+	if (vm.missing.length === 0) {
 		body = el(env, "div", {
 			cls: "gn-empty gn-empty--inline",
-			text: "（空）废弃的主页会出现在这里，文件仍保留在库中。",
+			text: "（空）登记路径在磁盘上已不存在的条目会出现在这里。",
 		});
 	} else {
-		const visible = vm.discarded.filter((card) => matchesSearch(card.filePath, searchText));
+		const visible = vm.missing.filter((card) => matchesSearch(card.filePath, searchText));
 		body =
 			visible.length === 0
 				? noMatchHint(env, searchText)
-				: el(env, "div", { cls: "gn-card-grid" }, visible.map((card) => buildDiscardedCard(env, card)));
+				: el(env, "div", { cls: "gn-card-grid" }, visible.map((card) => buildMissingCard(env, card)));
 	}
 
 	return el(env, "div", { cls: "gn-section gn-section--discarded" }, [
-		el(env, "div", { cls: "gn-section-head" }, [el(env, "div", { cls: "gn-section-label", text: "已废弃" })]),
+		el(env, "div", { cls: "gn-section-head" }, [el(env, "div", { cls: "gn-section-label", text: "已失效" })]),
 		el(env, "div", { cls: "gn-section-divider" }),
 		body,
 	]);
@@ -211,7 +211,7 @@ function buildCard(
 				? el(env, "button", {
 						cls: "gn-card-remove",
 						text: "✕",
-						attr: { type: "button", title: "废弃该主页（文件保留）", "data-path": card.filePath },
+						attr: { type: "button", title: "移除该主页登记（文件保留）", "data-path": card.filePath },
 					})
 				: null,
 			el(env, "div", { cls: "gn-card-path", text: card.filePath }),
@@ -234,14 +234,14 @@ function buildCard(
 		const remove = node.querySelector(".gn-card-remove");
 		remove?.addEventListener("click", (event) => {
 			event.stopPropagation();
-			handlers.onDiscardCard(card.filePath);
+			handlers.onRemoveCard(card.filePath);
 		});
 	}
 	return node;
 }
 
-/** 已废弃卡片：只显示路径，灰显、不可点击 */
-function buildDiscardedCard(env: DomEnv, card: DiscardedCardViewModel): HTMLElement {
+/** 已失效卡片：只显示路径，灰显、不可点击 */
+function buildMissingCard(env: DomEnv, card: MissingCardViewModel): HTMLElement {
 	return el(env, "div", { cls: "gn-card gn-card--discarded", attr: { title: card.filePath, "data-path": card.filePath } }, [
 		el(env, "div", { cls: "gn-card-path", text: card.filePath }),
 	]);

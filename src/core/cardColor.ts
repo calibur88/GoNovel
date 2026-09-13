@@ -30,7 +30,7 @@ function pickColor(candidates: readonly string[], random: RandomSource): string 
  *
  * 新卡片追加在末尾时，只有左邻居，约束随之放宽。
  */
-export function assignCardColor(
+function assignCardColor(
 	orderedPaths: readonly string[],
 	colors: Readonly<Record<string, string>>,
 	index: number,
@@ -50,7 +50,7 @@ export function assignCardColor(
  * 只在确实同色时才动；新色只避开这一张的两个邻居（左 `i-1`、右 `i+1`），
  * 因此改完不会把冲突推给右边，一次扫描即可收敛，无需递归。
  */
-export function fixAdjacent(
+function fixAdjacent(
 	orderedPaths: readonly string[],
 	colors: Record<string, string>,
 	index: number,
