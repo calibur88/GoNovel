@@ -407,9 +407,10 @@ export class HomeController {
 			? (await this.collectDiagnostics(homes)).items
 			: [];
 
-		// 图片废弃区：**只由 data.json 的缓存记录驱动**（实时下载失败不建卡，只出诊断）——
-		// 记录失效 = ① 来源文档被删；② 文档已导入但不再声明该 URL（改链接后的孤儿记录）；
-		// ③ 文档已导入、URL 未变但封面加载失败。文档存在但未被导入：默认忽略。
+		// 图片废弃区：**只由 data.json 的缓存记录驱动**。失效 = ① 来源文档被删；
+		// ② 文档已导入但不再声明该 URL（改链接后的孤儿记录）；③ 文档已导入、URL 未变但封面重新加载失败。
+		// 与「实时下载失败不建卡」的分界：没有缓存记录的 URL 下载失败 → 只出诊断与空槽，不进废弃区；
+		// 已有缓存记录、重新加载失败 → 进废弃区。文档存在但未被导入：默认忽略。
 		// 这样「清理」删掉记录后卡片不会复现；文档里仍失效的链接只在清理时提示。
 		const discardedImages: BoardDiscardedImage[] = [];
 		const worksByPath = new Map<string, WorkDocEntry>();
