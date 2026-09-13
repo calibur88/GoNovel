@@ -1,6 +1,6 @@
 {
   "name": "go-novel",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Obsidian 小说管理插件：主页管理 + 小说项目主页管理（看板），只管 .gnd",
   "main": "main.js",
   "scripts": {
