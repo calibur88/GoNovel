@@ -800,6 +800,67 @@ async function main(): Promise<void> {
 			.some((item) => item.code === "COVER_DOWNLOAD_FAILED" && item.target === "https://picsum.photos/seed/gonovel/500/750"),
 		JSON.stringify(controller.getDiagnostics().filter((item) => item.code.startsWith("COVER_"))),
 	);
+	// 空槽「刷新」按钮（网络分支）：经 refreshCover 门面 → 清失败记忆 → 重新入队 → 再下载一次
+	const coverUrl = "https://picsum.photos/seed/gonovel/500/750";
+	controller.refreshCover(coverUrl, "网络封面/远山/远山.gnd");
+	check("刷新（网络封面）：清失败记忆后立即重新下载一次", imageCache.fetches.length, 2);
+	controller.refreshCover(coverUrl, "网络封面/远山/远山.gnd"); // 下载中重复点
+	check("刷新去重：同一 URL 下载中重复点击不叠加", imageCache.fetches.length, 2);
+
+	// 刷新失败必须有回执：⚠ 弹窗 + 一条 warning 级运行日志（后台自动填充失败则静默）
+	await new Promise((resolve) => setTimeout(resolve, 50)); // 等本轮流水线跑完，失败回执才发出
+	ok(
+		"刷新失败：给用户 ⚠ 弹窗（只此一次，重复点不叠加）",
+		notifier.notices.filter((message) => message.includes("封面刷新失败")).length === 1,
+		JSON.stringify(notifier.notices),
+	);
+	ok(
+		"刷新失败：调试框留一条 warning 级运行日志",
+		controller
+			.getRuntimeLog()
+			.some((item) => item.level === "warning" && item.code === "LOG" && item.message.includes("封面刷新失败")),
+		JSON.stringify(controller.getRuntimeLog().filter((item) => item.level !== "info")),
+	);
+	// 自动填充（扫描触发）失败不该打扰用户：清空弹窗记账后再扫一次，不应新增提示
+	notifier.notices.length = 0;
+	await controller.refresh();
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	ok(
+		"自动填充失败静默：不给用户弹窗",
+		notifier.notices.length === 0,
+		JSON.stringify(notifier.notices),
+	);
+
+	// 空槽「刷新」按钮（本地封面分支）：不走下载，单独重解析这一张卡片——图片在 → 重扫接进看板
+	notifier.notices.length = 0;
+	const stampBefore = controller.getSnapshot().scannedAt;
+	await controller.refreshCover(null, "小说项目/大宋仙途/大宋仙途.gnd");
+	ok(
+		"刷新（本地封面，图片在）：重解析通过并重扫接进看板",
+		controller.getSnapshot().scannedAt > stampBefore && notifier.notices.length === 0,
+		`before=${stampBefore} after=${controller.getSnapshot().scannedAt} notices=${JSON.stringify(notifier.notices)}`,
+	);
+	ok(
+		"刷新（本地封面，图片在）：调试框留一条重新解析记录",
+		controller.getRuntimeLog().some((item) => item.message.includes("封面重新解析")),
+		JSON.stringify(controller.getRuntimeLog().filter((item) => item.message.includes("封面")).slice(-3)),
+	);
+
+	// 本地封面解析不出来（图片不存在 / 未声明封面）时，刷新要给回执：⚠ 弹窗 + warning 运行日志
+	notifier.notices.length = 0;
+	await controller.refreshCover(null, "调试样例/作品甲/作品甲.gnd"); // gnd_image 指向不存在的图片
+	ok(
+		"刷新（本地封面，图片不在）：给用户 ⚠ 弹窗",
+		notifier.notices.some((message) => message.includes("封面刷新失败")),
+		JSON.stringify(notifier.notices),
+	);
+	ok(
+		"刷新（本地封面，图片不在）：调试框留一条 warning 级运行日志",
+		controller
+			.getRuntimeLog()
+			.some((item) => item.level === "warning" && item.message.includes("封面刷新失败")),
+		JSON.stringify(controller.getRuntimeLog().filter((item) => item.level !== "info").slice(-3)),
+	);
 
 	console.log("== 13. 刷新：以 data.json 为真相源 ==");
 	// 模拟外部改动 data.json：直接改存储，不再走 updateSettings
@@ -864,6 +925,11 @@ async function main(): Promise<void> {
 		scopeRootsOf(["小说项目/主页.gnd", "调试样例/03-导入路径错误.gnd", "调试样例/05-字段缺失.gnd"]),
 		["小说项目", "调试样例"],
 	);
+	check(
+		"作用域根：目录条目自身作根（无目录条目支持时「调试样例」会缺失）",
+		scopeRootsOf(["小说项目/主页.gnd", "调试样例"], ["调试样例"]),
+		["小说项目", "调试样例"],
+	);
 	const wsFiles = controller.getScopedFiles();
 	check("作用域只收 .gnd（未登记目录与非 gnd 文件被忽略）", wsFiles.some((f) => !f.toLowerCase().endsWith(".gnd") || f.startsWith("网络封面/")), false);
 	check("作用域文件包含登记目录", wsFiles.some((f) => f === "小说项目/主页.gnd"), true);
@@ -884,22 +950,70 @@ async function main(): Promise<void> {
 		"大宋仙途:d",
 		"主页.gnd:f",
 	]);
-	const restored = controller.getSettings().debugEnabled;
-	await controller.updateSettings({ debugEnabled: restored });
+	// 工作台动作日志断言要看运行日志，先把调试开关打开（上一节刚验过关闭后不再收集诊断）
+	await controller.updateSettings({ debugEnabled: true });
+	const logLines = (): string[] => controller.getRuntimeLog().map((item) => `${item.level}|${item.message}`);
 
 	// 新增：不带后缀自动补 .gnd；父目录登记进 homePaths（目录条目，作用域持久化）
 	const created = await controller.createFile("测试目录/新首页");
 	ok("工作台新增（自动补 .gnd 后缀）", created && fs.existsSync(path.join(VAULT, "测试目录/新首页.gnd")));
+	ok("新增成功留 info 运行日志", logLines().includes("info|新增文件 | 测试目录/新首页.gnd"), JSON.stringify(logLines().slice(-3)));
 	check("父目录登记进 homePaths", controller.getSettings().homePaths.includes("测试目录"), true);
 	check("新文件立刻进作用域列表", controller.getScopedFiles().includes("测试目录/新首页.gnd"), true);
 	ok("重复创建被拒（文件已存在）", (await controller.createFile("测试目录/新首页")) === "exists");
 	ok("试图建在 vault 根被拒", (await controller.createFile("根目录文件")) === "root");
-	// 删除：homePaths 不动（目录留着，空了列表自然消失）；文件不存在 = 静默成功
+	ok(
+		"新增失败留 warning 运行日志（已存在 / vault 根下）",
+		logLines().some((line) => line.startsWith("warning|新增文件失败 | 文件已存在，不覆盖")) &&
+			logLines().some((line) => line.startsWith("warning|新增文件失败 | 不允许建在 vault 根下")),
+		JSON.stringify(logLines().filter((line) => line.includes("新增文件失败")).slice(-3)),
+	);
+	// 删除：homePaths 不动（登记是意图、磁盘是真值）；删掉目录下最后一个文件时连空目录一起清理
 	await controller.deleteFile("测试目录/新首页");
 	ok("工作台删除文件（进回收站）", !fs.existsSync(path.join(VAULT, "测试目录/新首页.gnd")));
-	check("删除不动 homePaths", controller.getSettings().homePaths.includes("测试目录"), true);
+	ok("删除成功留 info 运行日志", logLines().includes("info|删除文件 | 测试目录/新首页.gnd"), JSON.stringify(logLines().slice(-3)));
+	ok("删掉最后一个文件后空目录一并清理", !fs.existsSync(path.join(VAULT, "测试目录")));
+	ok("空目录进回收站（可恢复，非直接抹除）", fs.existsSync(path.join(TRASH, "测试目录")));
+	check(
+		"清理空目录不动 homePaths（登记留下，目录回来即复活）",
+		controller.getSettings().homePaths.includes("测试目录"),
+		true,
+	);
+	// 目标不存在不再静默：给提示 + warning 运行日志（路径写错时点完确认有反馈）
+	notifier.notices.length = 0;
 	await controller.deleteFile("测试目录/新首页");
-	ok("文件不存在也当成功（静默）", !fs.existsSync(path.join(VAULT, "测试目录/新首页.gnd")));
+	ok(
+		"文件不存在 → 提示 + warning 运行日志",
+		notifier.notices.some((message) => message.includes("文件不存在，未删除")) &&
+			logLines().includes("warning|删除文件失败 | 文件不存在 | 测试目录/新首页.gnd"),
+		JSON.stringify({ notices: notifier.notices, last: logLines().slice(-2) }),
+	);
+	// 只写一段路径（落在 vault 根下，无父目录）同样要留痕——删除侧不禁止根路径，但要有回执
+	notifier.notices.length = 0;
+	await controller.deleteFile("test");
+	ok(
+		"vault 根下的野路径 → 提示 + warning 运行日志",
+		notifier.notices.some((message) => message.includes("文件不存在，未删除") && message.includes("test.gnd")) &&
+			logLines().includes("warning|删除文件失败 | 文件不存在 | test.gnd"),
+		JSON.stringify({ notices: notifier.notices, last: logLines().slice(-2) }),
+	);
+
+	// 目录非空不清理：同级还有别的文件时，父目录必须留住
+	await controller.createFile("保留目录/甲");
+	await controller.createFile("保留目录/乙");
+	notifier.notices.length = 0;
+	await controller.deleteFile("保留目录");
+	ok(
+		"目标是目录 → 提示 + warning 运行日志",
+		notifier.notices.some((message) => message.includes("仅支持删除文件")) &&
+			logLines().includes("warning|删除文件失败 | 目标是目录（删除只针对文件）| 保留目录"),
+		JSON.stringify({ notices: notifier.notices, last: logLines().slice(-2) }),
+	);
+	await controller.deleteFile("保留目录/甲");
+	ok("同级还有文件：目录本身保留", fs.existsSync(path.join(VAULT, "保留目录")));
+	ok("同级还有文件：留下的那个还在", fs.existsSync(path.join(VAULT, "保留目录/乙.gnd")));
+	await controller.deleteFile("保留目录/乙");
+	ok("删空后才清理父目录", !fs.existsSync(path.join(VAULT, "保留目录")));
 	// 折叠目录持久化
 	controller.persistCollapsedDirs(["小说项目/大宋仙途"]);
 	check("折叠目录持久化", controller.getSettings().workbenchCollapsed, ["小说项目/大宋仙途"]);

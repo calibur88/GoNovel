@@ -17,7 +17,7 @@ export class PathInputModal extends Modal {
 		private readonly options: {
 			/** 弹窗标题（如「请输入创建路径」／「请输入删除路径」） */
 			title: string;
-			/** 输入框占位文案（如「例：小说项目/新章节.md」） */
+			/** 输入框占位文案（如「例：小说项目/新章节（默认 .gnd，可省略后缀）」） */
 			placeholder: string;
 			/** 确认回调；入参为去除首尾空白的输入值（非空才会回调） */
 			onConfirm: (path: string) => void;

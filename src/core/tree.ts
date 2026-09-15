@@ -13,15 +13,17 @@ export interface FileTreeNode {
 }
 
 /**
- * 工作台文件树的作用域根：**登记主页的父目录集合**（去重、排序）。
+ * 工作台文件树的作用域根（去重、排序）。
  *
- * 作用域 = 每个根目录的整棵子树，文件类型不限（`.gnd` / `.md` / 其它）。
+ * `homePaths` 里的**目录条目**（工作台新增产生）自身作根；文件条目取其父目录。
+ * 作用域 = 每个根目录的整棵子树；是否收进文件树由 `filesInScope` 决定（只收 `.gnd`）。
  */
-export function scopeRootsOf(homePaths: readonly string[]): string[] {
+export function scopeRootsOf(homePaths: readonly string[], dirEntries: readonly string[] = []): string[] {
+	const dirs = new Set(dirEntries);
 	const roots = new Set<string>();
 	for (const path of homePaths) {
-		const dir = dirname(path);
-		if (dir.length > 0) roots.add(dir);
+		const root = dirs.has(path) ? path : dirname(path);
+		if (root.length > 0) roots.add(root);
 	}
 	return [...roots].sort();
 }

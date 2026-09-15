@@ -10,6 +10,8 @@ export interface HomeBoardHandlers {
 	onClearSearch(): void;
 	/** 清理：弹窗列出「图片废弃区」的缓存记录，确认后删记录 + 删缓存文件（关联文档仍失效时另行提示） */
 	onCleanImages(): void;
+	/** 刷新封面（空槽内的刷新按钮，空槽一律有）：网络封面重下载、本地／未声明封面重解析——见 `HomeController.refreshCover` */
+	onRefreshCover(remoteUrl: string | null, source: string): void;
 }
 
 /** 渲染小说项目主页（看板） */
@@ -29,7 +31,7 @@ export function renderHomeBoard(
 		el(env, "div", { cls: "gn-board" }, [
 			vm.welcome !== null ? el(env, "div", { cls: "gn-board-welcome", text: vm.welcome }) : null,
 			buildToolbar(env, handlers, searchText),
-			buildWorks(env, vm.cards, searchText),
+			buildWorks(env, vm.cards, searchText, handlers),
 			buildDiscardedImages(env, vm.discardedImages),
 		]),
 	]);
@@ -75,7 +77,12 @@ function buildSearchBar(env: DomEnv, handlers: HomeBoardHandlers, searchText: st
 }
 
 /** 我的作品区：搜索时只显示命中项（标题，或自定义字段的键／值） */
-function buildWorks(env: DomEnv, cards: GndWorkCard[], searchText: string): HTMLElement {
+function buildWorks(
+	env: DomEnv,
+	cards: GndWorkCard[],
+	searchText: string,
+	handlers: HomeBoardHandlers,
+): HTMLElement {
 	if (cards.length === 0) {
 		return el(env, "div", {
 			cls: "gn-empty",
@@ -92,7 +99,12 @@ function buildWorks(env: DomEnv, cards: GndWorkCard[], searchText: string): HTML
 	if (visible.length === 0) {
 		return el(env, "div", { cls: "gn-empty gn-empty--inline", text: `没有匹配「${searchText.trim()}」的作品。` });
 	}
-	return el(env, "div", { cls: "gn-work-grid" }, visible.map((card) => buildWorkCard(env, card)));
+	return el(
+		env,
+		"div",
+		{ cls: "gn-work-grid" },
+		visible.map((card) => buildWorkCard(env, card, handlers)),
+	);
 }
 
 /**
@@ -128,10 +140,10 @@ function buildDiscardedImages(env: DomEnv, records: readonly BoardDiscardedImage
 }
 
 /** 单张作品卡片：封面 + WHERE 字段；配色规则与管理视图卡片一致（相邻不同色） */
-function buildWorkCard(env: DomEnv, card: GndWorkCard): HTMLElement {
+function buildWorkCard(env: DomEnv, card: GndWorkCard, handlers: HomeBoardHandlers): HTMLElement {
 	const cls = card.color === null ? "gn-work-card" : "gn-work-card gn-work-card--colored";
 	const node = el(env, "div", { cls, attr: { title: card.filePath } }, [
-		buildCover(env, card),
+		buildCover(env, card, handlers),
 		el(env, "div", { cls: "gn-work-title", text: card.title }),
 		card.fields.length > 0
 			? el(
@@ -157,10 +169,11 @@ function buildWorkCard(env: DomEnv, card: GndWorkCard): HTMLElement {
  * 缩放完全交给 CSS：槽位是定高弹性盒（可渲染范围），`.gn-work-cover-img` 用
  * `max-width / max-height + object-fit: contain` 让浏览器按槽位等比缩放、居中完整显示，
  * 不裁切——天然规避缓存命中时 `load` 不触发、取整 1px 误差与监听器清理三类问题。
- * 图片加载失败（文件被删／路径失效）时退回空槽，不做错误提示——封面是装饰，缺了不该打断看板。
+ * 图片加载失败（文件被删／路径失效）时退回空槽，不做错误提示——封面是装饰，缺了不该打断看板；
+ * 空槽内**一律**带一个「刷新」按钮（见 `coverRefreshButton`），点了交给 controller 重新解析封面。
  */
-function buildCover(env: DomEnv, card: GndWorkCard): HTMLElement {
-	if (card.cover === null) return emptyCover(env);
+function buildCover(env: DomEnv, card: GndWorkCard, handlers: HomeBoardHandlers): HTMLElement {
+	if (card.cover === null) return emptyCover(env, card, handlers);
 	const node = el(env, "div", { cls: "gn-work-cover" });
 	const image = el(env, "img", {
 		cls: "gn-work-cover-img",
@@ -169,12 +182,40 @@ function buildCover(env: DomEnv, card: GndWorkCard): HTMLElement {
 	image.addEventListener("error", () => {
 		image.remove();
 		node.classList.add("gn-work-cover--empty");
+		// 缓存图失效（缓存文件被删、本地图片被移走等）：与「本就无图」同样给刷新入口
+		node.appendChild(coverRefreshButton(env, card, handlers));
 	});
 	node.appendChild(image);
 	return node;
 }
 
-/** 空封面槽：无图时的占位（保持卡片高度一致） */
-function emptyCover(env: DomEnv): HTMLElement {
-	return el(env, "div", { cls: "gn-work-cover gn-work-cover--empty" });
+/** 空封面槽：无图时的占位（保持卡片高度一致），内嵌「刷新」按钮 */
+function emptyCover(env: DomEnv, card: GndWorkCard, handlers: HomeBoardHandlers): HTMLElement {
+	const node = el(env, "div", { cls: "gn-work-cover gn-work-cover--empty" });
+	node.appendChild(coverRefreshButton(env, card, handlers));
+	return node;
+}
+
+/**
+ * 空槽内的「刷新」按钮：**空槽一律有**，不按封面类型分流（网络 / 本地 / 未声明都给）。
+ *
+ * 点一下交给 controller 重新解析这张卡片的封面：网络封面清失败记忆后重下，本地／未声明封面
+ * 触发一次重扫重解析（图片文件被补回来时立即出图）。不区分失败态与加载中——语义统一为「刷新」。
+ * `remoteUrl` 只决定提示文案，不决定按钮是否出现。
+ */
+function coverRefreshButton(env: DomEnv, card: GndWorkCard, handlers: HomeBoardHandlers): HTMLElement {
+	const url = card.remoteUrl;
+	const btn = el(env, "button", {
+		cls: "gn-btn gn-cover-refresh",
+		text: "刷新",
+		attr: {
+			type: "button",
+			title: url === null ? `重新解析封面：${card.filePath}` : `重新下载网络封面：${url}`,
+		},
+	});
+	btn.addEventListener("click", (event) => {
+		event.stopPropagation();
+		handlers.onRefreshCover(url, card.filePath);
+	});
+	return btn;
 }

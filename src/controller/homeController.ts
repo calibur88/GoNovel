@@ -17,6 +17,7 @@ import {
 	parseVariables,
 	parseWhere,
 	resolveImportPath,
+	scopeRootsOf,
 	detectImageType,
 	splitFrontmatter,
 	stripExtension,
@@ -29,6 +30,7 @@ import {
 	mergeSettings,
 	type BoardDiscardedImage,
 	type Diagnostic,
+	type DiagnosticLevel,
 	type GndFrontmatter,
 	type GoNovelSettings,
 	type HomeControllerSnapshot,
@@ -78,6 +80,12 @@ export class HomeController {
 	private coverIssues = new Map<string, { code: CoverFailureCode; message: string; detail: string; url: string }>();
 	/** 本次扫描发现、等待后台填充的网络封面（缓存未命中的 URL，scan 结束由 `fillPendingCovers` 下载） */
 	private pendingCovers = new Map<string, { url: string; source: string }>();
+	/** 后台封面填充是否正在运行：防并发 fill，新入队条目由当前轮 while 循环自然消费 */
+	private filling = false;
+	/** 正在下载的封面 URL（流水线串行，至多一个）：`retryCover` 据此对「下载中重复点」去重 */
+	private fillingUrl: string | null = null;
+	/** 用户手动重试、等待反馈的封面 URL：其流水线跑完后若仍失败，给一条警告（后台自动填充失败不打扰用户） */
+	private retryFeedback = new Set<string>();
 	private listeners = new Set<() => void>();
 	private refreshChain: Promise<void> = Promise.resolve();
 	private saveChain: Promise<void> = Promise.resolve();
@@ -87,7 +95,7 @@ export class HomeController {
 	private scopedRefreshTimer: number | null = null;
 	/** 诊断「首次出现」序号登记（级别+错误码+路径 → seq）：跨扫描保持老问题的老位置 */
 	private diagnosticFirstSeen = new Map<string, number>();
-	/** 工作台文件树作用域内的全部文件（登记主页父目录子树，不限扩展名；每次扫描时刷新） */
+	/** 工作台文件树作用域内的 `.gnd` 文件（登记主页父目录子树；每次扫描时刷新） */
 	private scopedFiles: string[] = [];
 	/** 派生废弃区：homePaths 中磁盘不存在的路径（每次扫描时判定） */
 	private missingHomePaths: string[] = [];
@@ -267,15 +275,35 @@ export class HomeController {
 
 	/**
 	 * 工作台「新增」结果：`true` = 创建成功；`"exists"` = 同名文件已存在；`"root"` = 试图建在 vault 根；`false` = 其它失败。
+	 *
+	 * 每种结果都在**运行日志**里留一条（成功 `info`、失败 `warning`），失败原因尽量说清
+	 * （路径为空 / vault 根下 / 已存在 / 其它）；宿主 `create` 本身吞异常返回 false，
+	 * 这里先 `stat` 一次把「已存在」与「其它失败」分开，日志才不撒谎。
 	 */
 	async createFile(rawPath: string): Promise<boolean | "exists" | "root"> {
 		const path = this.withGndExtension(normalizePath(rawPath.trim()));
-		if (path.length === 0) return false;
+		if (path.length === 0) {
+			this.logAction("新增文件失败 | 路径为空", "warning");
+			return false;
+		}
 		const parentDir = dirname(path);
-		if (parentDir.length === 0) return "root"; // 不允许直接建在 vault 根
+		if (parentDir.length === 0) {
+			// 不允许直接建在 vault 根：父目录不存在则无从登记作用域
+			this.logAction(`新增文件失败 | 不允许建在 vault 根下 | ${path}`, "warning");
+			return "root";
+		}
+		const existed = (await this.host.dataSource.stat(path)).exists;
 		const created = await this.host.fileWriter.create(path);
-		if (!created) return "exists";
-		this.logRuntime(`新增文件 | ${path}`);
+		if (!created) {
+			this.logAction(
+				existed
+					? `新增文件失败 | 文件已存在，不覆盖 | ${path}`
+					: `新增文件失败 | 宿主创建失败（路径非法或权限不足）| ${path}`,
+				"warning",
+			);
+			return existed ? "exists" : false;
+		}
+		this.logAction(`新增文件 | ${path}`);
 		// 父目录登记进 homePaths（作用域持久化），新文件立刻出现在列表里
 		if (this.settings.homePaths.indexOf(parentDir) < 0) {
 			await this.updateSettings({ homePaths: [...this.settings.homePaths, parentDir] });
@@ -292,37 +320,89 @@ export class HomeController {
 	 * 不是 home（只是作用域里的 project 源文件）→ 不处理登记。
 	 *
 	 * ① 目录输入直接提示失败（删除只针对文件）；
-	 * ② 路径不带扩展名时自动补 `.gnd`，文件不存在 = 目的已达，静默成功不弹失败；
-	 * ③ 文件树由 vault 的 delete 事件走防抖刷新，这里不再手动重算。
+	 * ② 路径不带扩展名时自动补 `.gnd`；
+	 * ③ 目标不存在**不是静默成功**——给提示 + 运行日志（`删除文件失败 | 文件不存在`），
+	 *    否则路径写错（如只写 `test`，落在 vault 根下）时点完确认毫无反馈；
+	 * ④ 删成功后**向上清理空目录**（见 `pruneEmptyDirs`）——目录下最后一个文件被删掉时，
+	 *    目录不再僵在文件树里；
+	 * ⑤ 文件树由 vault 的 delete 事件走防抖刷新，这里不再手动重算。
+	 *
+	 * 每条分支都在**运行日志**里留痕（成功 `info`、失败 `warning`）；宿主 `trash` 抛错
+	 * 也在这里收口，不让异常冒到调用方（弹窗点确认后毫无反应是最糟的反馈）。
 	 */
 	async deleteFile(rawPath: string): Promise<void> {
-		// ① 先走 isDirectory：目录输入明确提示，不做静默假成功
-		const originalStat = await this.host.dataSource.stat(rawPath);
-		if (originalStat.exists && originalStat.isDirectory) {
-			this.host.notifier.notify(`仅支持删除文件：${rawPath}`);
+		const target = normalizePath(rawPath.trim());
+		if (target.length === 0) {
+			this.logAction("删除文件失败 | 路径为空", "warning");
 			return;
 		}
+		let fullPath = target;
+		try {
+			// ① 先走 isDirectory：目录输入明确提示，不做静默假成功
+			const originalStat = await this.host.dataSource.stat(target);
+			if (originalStat.exists && originalStat.isDirectory) {
+				this.logAction(`删除文件失败 | 目标是目录（删除只针对文件）| ${target}`, "warning");
+				this.host.notifier.notify(`仅支持删除文件：${target}`);
+				return;
+			}
 
-		// ② 再走类型：补 .gnd 后缀
-		const fullPath = this.withGndExtension(normalizePath(rawPath.trim()));
-		const targetStat = await this.host.dataSource.stat(fullPath);
-		if (!targetStat.exists) {
-			return; // 文件不存在，静默成功（用户目的已达）
-		}
+			// ② 再走类型：补 .gnd 后缀
+			fullPath = this.withGndExtension(target);
+			const targetStat = await this.host.dataSource.stat(fullPath);
+			if (!targetStat.exists) {
+				this.logAction(`删除文件失败 | 文件不存在 | ${fullPath}`, "warning");
+				this.host.notifier.notify(`文件不存在，未删除：${fullPath}`);
+				return;
+			}
 
-		// ③ 删除（进系统回收站）
-		const ok = await this.host.fileWriter.trash(fullPath, true);
-		if (!ok) {
+			// ③ 删除（进系统回收站）
+			const ok = await this.host.fileWriter.trash(fullPath, true);
+			if (!ok) {
+				this.logAction(`删除文件失败 | 回收站操作失败 | ${fullPath}`, "warning");
+				this.host.notifier.notify(`删除失败：${fullPath}`);
+				return;
+			}
+		} catch (err) {
+			this.logAction(`删除文件失败 | ${String(err)} | ${fullPath}`, "warning");
 			this.host.notifier.notify(`删除失败：${fullPath}`);
 			return;
 		}
-		this.logRuntime(`删除文件 | ${fullPath}`);
+		this.logAction(`删除文件 | ${fullPath}`);
 
-		// ④ 若为 home，同步移除登记（含配色），各订阅视图自动同步
+		// ④ 顺手清理空目录：若删掉的是该目录下最后一个文件，父目录也一并移入回收站
+		const pruned = await this.pruneEmptyDirs(fullPath);
+
+		// ⑤ 若为 home，同步移除登记（含配色），各订阅视图自动同步
 		if (this.settings.homePaths.indexOf(fullPath) >= 0) {
 			await this.removeHome(fullPath);
 		}
-		this.host.notifier.notify(`已删除（进系统回收站）：${fullPath}`);
+		const prunedSuffix = pruned.length === 0 ? "" : `，并清理空目录：${pruned.join("、")}`;
+		this.host.notifier.notify(`已删除（进系统回收站）：${fullPath}${prunedSuffix}`);
+	}
+
+	/**
+	 * 向上清理空目录：从被删文件的父目录起逐级检查，目录**物理为空**（`adapter.list`
+	 * 的 folders 与 files 都为空）就移入系统回收站，直到遇到非空目录或 vault 根为止。
+	 *
+	 * 只删真空目录——目录里还剩任何文件 / 子目录（含 `.DS_Store` 这类隐藏项）都不动，
+	 * 避免误删；返回实际清理掉的目录路径（自内向外），供提示展示。
+	 *
+	 * 不动 `homePaths`：登记是意图清单，目录被删后登记自然悬空（零输出），
+	 * 目录再建回来即自动复活——磁盘才是真值。
+	 */
+	private async pruneEmptyDirs(fromFile: string): Promise<string[]> {
+		const removed: string[] = [];
+		let dir = dirname(fromFile);
+		while (dir.length > 0) {
+			const listing = await this.host.dataSource.listDir(dir);
+			if (listing.folders.length > 0 || listing.files.length > 0) break;
+			const ok = await this.host.fileWriter.trash(dir, true);
+			if (!ok) break; // 目录不存在（listDir 对不存在的目录也返回空）或删除失败
+			this.logRuntime(`删除空目录 | ${dir}`);
+			removed.push(dir);
+			dir = dirname(dir);
+		}
+		return removed;
 	}
 
 	/** 工作台路径默认 gnd 类型：末段无扩展名时自动补 `.gnd` */
@@ -377,6 +457,79 @@ export class HomeController {
 		return removedItems.length;
 	}
 
+	/**
+	 * 看板空封面槽的「刷新」入口：重新解析这张卡片的封面。
+	 *
+	 * 空槽**一律给按钮**，不按封面类型分流（用户不必分清「重下」还是「重解析」）：
+	 * - **网络封面**（`remoteUrl` 非空）→ 转 `retryCover`：清会话失败记忆 → 重新入队 → 后台下载；
+	 * - **本地路径封面 / 未声明封面**（`remoteUrl` 为 null）→ `refreshLocalCover`：单独重解析这一张
+	 *   卡片（真读一次作品文档 + `stat` 图片），文件刚补回来、或上次因宿主异常没读到，这次可能就成了。
+	 */
+	async refreshCover(remoteUrl: string | null, source: string): Promise<void> {
+		if (remoteUrl === null) {
+			await this.refreshLocalCover(source);
+			return;
+		}
+		this.retryCover(remoteUrl, source);
+	}
+
+	/**
+	 * 重新挂起一个网络封面：清失败记忆 → 入队 → 触发后台填充。
+	 *
+	 * 空封面槽「刷新」的网络分支（见 `refreshCover`）。URL 已在队列中、或正在下载中则忽略
+	 * （`pendingCovers` 里的条目被 while 取走后即出队，所以还要看 `fillingUrl`，
+	 * 否则下载尚未结束时的重复点击会再入队、被本轮消费成重复下载）。
+	 * 清 `coverIssues` 是关键——否则 `resolveRemoteCover` 命中失败记忆会直接空槽，重试无效。
+	 * 入队时在 `retryFeedback` 登记：这次失败的反馈要落到用户眼前（见 `reportRetryFailure`）。
+	 */
+	private retryCover(url: string, source: string): void {
+		if (this.pendingCovers.has(url) || this.fillingUrl === url) return;
+		this.coverIssues.delete(url);
+		this.retryFeedback.add(url);
+		this.pendingCovers.set(url, { url, source });
+		void this.fillPendingCovers();
+	}
+
+	/**
+	 * 空封面槽「刷新」的本地分支：**单独重解析这一张卡片**（真读一次作品文档 + `stat` 图片）。
+	 *
+	 * 本地封面没有缓存要重下，能做的是把「解析」重跑一遍：图片文件刚补回来、或上次因宿主异常
+	 * 没读到，这次就可能成。图片**存在**但浏览器仍渲染不出来（文件损坏等）属于渲染层的事，
+	 * 这里判不出来——按钮照样留着，`<img>` 的 `error` 会再退回空槽。
+	 */
+	private async refreshLocalCover(sourcePath: string): Promise<void> {
+		try {
+			const text = await this.host.dataSource.read(sourcePath);
+			if (text === null) return this.reportCoverRefreshFailure("作品文档读取失败", sourcePath);
+			const raw = splitFrontmatter(text).frontmatter.gndImage;
+			if (raw === null) return this.reportCoverRefreshFailure("作品未声明封面（gnd_image）", sourcePath);
+			if (isHttpUrl(raw)) return this.retryCover(raw, sourcePath); // 声明的是网络地址：转下载分支
+			const image = normalizeAssetPath(raw);
+			if (image === null) return this.reportCoverRefreshFailure("封面路径非法", sourcePath);
+			const stat = await this.host.dataSource.stat(image);
+			if (!stat.exists) return this.reportCoverRefreshFailure(`封面图片不存在：${image}`, sourcePath);
+			// 解析通过：重扫一次接进看板（不弹窗——图出来即自证）
+			this.logRuntime(`封面重新解析 | ${image}`);
+			await this.refresh();
+		} catch (err) {
+			this.reportCoverRefreshFailure(`宿主读取异常：${String(err)}`, sourcePath);
+		}
+	}
+
+	/**
+	 * 封面刷新的失败回执（网络 / 本地共用）：⚠ 弹窗 + 一条 **warning 级**运行日志。
+	 *
+	 * 只对**用户主动点刷新**的那次失败触发（网络侧由 `retryFeedback` 登记）——后台自动填充
+	 * 失败不弹窗，否则每次扫描都可能连环打扰；弹窗不受调试开关限制，日志条目受（同 `logRuntime`）。
+	 *
+	 * 落在运行日志区而非诊断区：诊断每次扫描重建，塞进去下一轮就没了；且这是**动作回执**，
+	 * 与封面组「封面声明坏了」的 error 诊断不是一回事。
+	 */
+	private reportCoverRefreshFailure(reason: string, subject: string): void {
+		this.notify(`⚠ 封面刷新失败：${reason}（${subject}）`);
+		if (this.logRuntime(`封面刷新失败 | ${reason} | ${subject}`, "warning")) this.emit();
+	}
+
 	/** 向用户发一条提示（转发给宿主的提示器） */
 	notify(message: string): void {
 		this.host.notifier.notify(message);
@@ -392,7 +545,9 @@ export class HomeController {
 		this.refreshChain = this.refreshChain
 			.catch(() => {})
 			.then(() => this.scan())
-			.catch((err) => this.logRuntime(`刷新失败 | ${String(err)}`));
+			.catch((err) => {
+				this.logRuntime(`刷新失败 | ${String(err)}`);
+			});
 		return this.refreshChain;
 	}
 
@@ -422,7 +577,8 @@ export class HomeController {
 	 *   home 集合取上次扫描快照，与实时登记可能有瞬时偏差，登记变更会立即触发重扫补齐）：
 	 *   不做小范围重跑，否则刷新后诊断会比当前显示的更少，看起来像信息丢失；
 	 * - 串行读取，单文件异常隔离为该文件的 error，不影响其余文件；
-	 * - 只更新诊断输出：**不写 `data.json`、不改 frontmatter、不重新求解配色、不监听 vault 事件**。
+	 * - 只更新诊断输出：**不写 `data.json`、不改 frontmatter、不重新求解配色、不监听 vault 事件、不联网**；
+	 *   解析中登记的待下载封面留待下一次扫描（`fillPendingCovers`）消费，此处不触发。
 	 *
 	 * 刷新 = 只读诊断，不是修复。
 	 */
@@ -434,8 +590,6 @@ export class HomeController {
 			const { items, scanned } = await this.collectDiagnostics(this.snapshot.homes);
 			this.diagnostics = items;
 			this.logRuntime(`诊断刷新完成 | 共解析 ${scanned} 个 .gnd`);
-			// 诊断路径同样只登记待填充封面（不联网），收尾时后台补下载
-			this.fillPendingCovers().catch(() => {});
 			return items;
 		} finally {
 			this.refreshing = false;
@@ -557,12 +711,8 @@ export class HomeController {
 	}
 
 	private scopeRoots(): string[] {
-		const roots = new Set<string>();
-		for (const entry of this.settings.homePaths) {
-			const root = this.dirEntries.has(entry) ? entry : dirname(entry);
-			if (root.length > 0) roots.add(root);
-		}
-		return [...roots];
+		// 目录条目（工作台新增产生）自身作根，文件条目取父目录——逻辑收口在 core（verify-core 覆盖）
+		return scopeRootsOf(this.settings.homePaths, [...this.dirEntries]);
 	}
 
 	/** 物理相：adapter.list 逐层递归（并发），返回作用域根下的全部 `.gnd` */
@@ -887,7 +1037,7 @@ export class HomeController {
 	/**
 	 * 解析 project 的 `gnd_image` 封面。
 	 *
-	 * 本地路径：归一化 → 交给宿主换算资源地址。
+	 * 本地路径：归一化 → 交给宿主换算资源地址（换算抛错则退化成无封面，空槽里的「刷新」可再试）。
 	 * http/https：查 `imageCache` 记录（URL 为键），有记录且缓存文件在 → 直接用本地缓存；
 	 * 否则**登记待后台填充**（`pendingCovers`），扫描阶段不联网；下载由 `fillPendingCovers`
 	 * 在扫描结束后跑五步流水线（下载 → 魔数校验 → 解码重绘 → 摘要 → 落盘写记录）。
@@ -902,7 +1052,13 @@ export class HomeController {
 		if (isHttpUrl(raw)) return this.resolveRemoteCover(raw, sourcePath);
 		const image = normalizeAssetPath(raw);
 		if (image === null) return { image: null, imageUrl: null, remoteUrl: null };
-		return { image, imageUrl: this.host.dataSource.resolveResource(image), remoteUrl: null };
+		try {
+			return { image, imageUrl: this.host.dataSource.resolveResource(image), remoteUrl: null };
+		} catch {
+			// 宿主换算资源地址失败（异常路径等）：退化成「无封面」，空槽留给「刷新」按钮再试——
+			// 单张卡片的封面问题不该炸掉整次扫描（那会让全部卡片都不更新）
+			return { image: null, imageUrl: null, remoteUrl: null };
+		}
 	}
 
 	/** 网络封面：缓存优先；未命中则登记待后台填充，**扫描阶段零网络**（不阻塞启动） */
@@ -984,24 +1140,68 @@ export class HomeController {
 	/**
 	 * 后台填充待下载的网络封面：逐个跑五步流水线（串行，宿主侧自带超时），
 	 * 成功落盘的封面追加一次刷新接进快照（此时缓存命中，纯 IO 不联网）。
-	 * 调用方 fire-and-forget；失败明细进 `coverIssues`，本会话不再重试。
+	 *
+	 * 调用方 fire-and-forget；同一时刻只跑一轮（`filling` 防并发，当前 URL 记在 `fillingUrl`）——
+	 * 运行中新入队的 URL 留在 map 里，由本轮的 while 循环**自然消费**（不预先快照、不 clear）。
+	 * `refresh` 在整轮结束后按「本轮是否成功过」统一触发一次。
+	 * 失败明细进 `coverIssues`（本会话不再自动重试，用户可经 `retryCover` 手动重试）；
+	 * **手动重试**的那次失败额外经 `reportRetryFailure` 给用户一条警告，自动填充失败则静默。
 	 */
 	private async fillPendingCovers(): Promise<void> {
-		const pending = [...this.pendingCovers.values()];
-		this.pendingCovers.clear();
-		if (pending.length === 0) return;
+		if (this.filling) return; // 已有 fill 在跑，新条目由它消费
+		this.filling = true;
 		let wired = false;
-		for (const item of pending) {
-			if (await this.runCoverPipeline(item.url, item.source)) wired = true;
+		try {
+			while (this.pendingCovers.size > 0) {
+				const next = this.pendingCovers.entries().next();
+				if (next.done === true) break;
+				const [url, item] = next.value;
+				this.pendingCovers.delete(url);
+				this.fillingUrl = url;
+				let done = false;
+				try {
+					done = await this.runCoverPipeline(url, item.source);
+				} catch {
+					// 宿主异常（requestUrl 抛错等）等同本次失败：不中断整轮，剩余条目继续消费
+				} finally {
+					this.fillingUrl = null;
+				}
+				if (done) {
+					wired = true;
+					this.retryFeedback.delete(url);
+				} else if (this.retryFeedback.delete(url)) {
+					const issue = this.coverIssues.get(url);
+					this.reportCoverRefreshFailure(issue === undefined ? "下载流水线异常" : issue.message, url);
+				}
+			}
+		} finally {
+			this.filling = false;
 		}
 		if (wired) void this.refresh();
 	}
 
-	/** 记一条运行日志（系统行）；**追加在尾部（时间正序，最新在最下）**，超出上限丢最旧的 */
-	private logRuntime(message: string): void {
-		if (!this.settings.debugEnabled) return;
+	/**
+	 * 记一条**用户动作**日志并让调试框立刻看到：运行日志 + 一次 `emit()`。
+	 *
+	 * 与裸 `logRuntime` 的区别只在「记下就重渲」——工作台的新增／删除不在扫描链上，
+	 * 不主动 emit 的话调试框要等下一次扫描才刷出来。调试开关关着时 `logRuntime`
+	 * 返回 false，这里也就不做无意义的重渲。
+	 */
+	private logAction(message: string, level: DiagnosticLevel = "info"): void {
+		if (this.logRuntime(message, level)) this.emit();
+	}
+
+	/**
+	 * 记一条运行日志（系统行）；**追加在尾部（时间正序，最新在最下）**，超出上限丢最旧的。
+	 *
+	 * 级别默认 `info`（常规运行期信息）；用户主动操作的失败（如封面手动刷新失败、
+	 * 工作台新增／删除未生效）传 `warning`，好在调试框里以警告配色跳出来。
+	 * **仅在调试开关开启时记录**，返回值表示是否真的记下了。
+	 */
+	private logRuntime(message: string, level: DiagnosticLevel = "info"): boolean {
+		if (!this.settings.debugEnabled) return false;
 		this.runtimeLog.push({
-			level: "info",
+			level,
 			code: "LOG",
 			path: "",
 			message,
@@ -1013,6 +1213,7 @@ export class HomeController {
 		if (this.runtimeLog.length > RUNTIME_LOG_LIMIT) {
 			this.runtimeLog.splice(0, this.runtimeLog.length - RUNTIME_LOG_LIMIT);
 		}
+		return true;
 	}
 
 	private persist(): void {
@@ -1021,7 +1222,9 @@ export class HomeController {
 		this.saveChain = this.saveChain
 			.catch(() => {})
 			.then(() => this.host.storage.save(snapshot))
-			.catch((err) => this.logRuntime(`保存失败 | ${String(err)}`));
+			.catch((err) => {
+				this.logRuntime(`保存失败 | ${String(err)}`);
+			});
 	}
 
 	private emit(): void {

@@ -63,7 +63,8 @@ export function buildHomeBoardViewModel(
 /**
  * 按 `**WHERE**` 字段顺序取每条作品的值，空值整行不出现。
  *
- * 封面来自 project 的 `gnd_image`（由 controller 解析成宿主资源地址），未声明则为 null。
+ * 封面来自 project 的 `gnd_image`（由 controller 解析成宿主资源地址），未声明则为 null；
+ * 同时透传声明的网络封面 URL（`remoteUrl`），供 ui 在空槽时渲染「刷新」入口（并决定走下载还是重解析）。
  */
 function buildCards(home: HomeDocSnapshot, projectColors: Readonly<Record<string, string>>): GndWorkCard[] {
 	return home.works.map((work) => {
@@ -77,6 +78,7 @@ function buildCards(home: HomeDocSnapshot, projectColors: Readonly<Record<string
 			title: work.title,
 			filePath: work.filePath,
 			cover: work.imageUrl,
+			remoteUrl: work.remoteUrl,
 			color: projectColors[work.filePath] ?? null,
 			fields,
 		};

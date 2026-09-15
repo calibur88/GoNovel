@@ -1,4 +1,4 @@
-import { Notice, TFile, requestUrl, type App, type Plugin, type Vault } from "obsidian";
+import { Notice, TFile, TFolder, requestUrl, type App, type Plugin, type Vault } from "obsidian";
 import { DEV_BUILD } from "./devMode";
 import {
 	GND_EXTENSION,
@@ -99,10 +99,14 @@ class ObsidianNotifier implements INotifier {
 class ObsidianFileWriter implements IFileWriter {
 	constructor(private readonly vault: Vault) {}
 
+	/**
+	 * 移入回收站（不做不可恢复的抹除）。**文件与目录都支持**——
+	 * 目录用于清理「删掉最后一个文件后剩下的空目录」。
+	 */
 	async trash(path: string, system: boolean): Promise<boolean> {
-		const file = this.vault.getAbstractFileByPath(path);
-		if (!(file instanceof TFile)) return false;
-		await this.vault.trash(file, system);
+		const target = this.vault.getAbstractFileByPath(path);
+		if (!(target instanceof TFile) && !(target instanceof TFolder)) return false;
+		await this.vault.trash(target, system);
 		return true;
 	}
 

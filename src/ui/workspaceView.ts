@@ -13,7 +13,7 @@ export interface WorkspaceHandlers {
 	onCreate(): void;
 	/** ③ 删除：弹文本输入框 + 强确认，走回收站 */
 	onDelete(): void;
-	/** ④ 点文件：按 gnd_type 分流（home → 看板，其余 → 源码） */
+	/** ④ 点文件：一律进源码（宿主原生 markdown）；看板只由主页管理卡片打开 */
 	onOpenFile(path: string): void;
 	/** ④ 点目录：展开 / 折叠 */
 	onToggleDir(path: string): void;
@@ -103,7 +103,7 @@ function buildEditRow(env: DomEnv, handlers: WorkspaceHandlers): HTMLElement {
 	return el(env, "div", { cls: "gn-ws-row gn-ws-edit" }, [addBtn, deleteBtn]);
 }
 
-/** ④ 文件树：目录在前、文件在后；点目录展开／折叠，点文件分流打开 */
+/** ④ 文件树：目录在前、文件在后；点目录展开／折叠，点文件一律进源码 */
 function buildTree(env: DomEnv, tree: readonly FileTreeNode[], handlers: WorkspaceHandlers, state: WorkspaceState): HTMLElement {
 	if (tree.length === 0) {
 		return el(env, "div", {

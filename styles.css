@@ -377,13 +377,6 @@
 	line-height: 1.6;
 }
 
-/* 分区标题：已废弃（n） / 已丢失的主页（n） */
-.gn-modal-section {
-	margin: 12px 0 6px;
-	font-weight: 600;
-	color: var(--text-normal);
-}
-
 .gn-modal-list {
 	max-height: 240px;
 	overflow: auto;
@@ -400,6 +393,18 @@
 }
 
 .gn-modal-row-path {
+	word-break: break-all;
+}
+
+/* 图片清理弹窗：来源路径 + URL 两行（URL 弱化为次行小字） */
+.gn-modal-row-paths {
+	flex: 1;
+	min-width: 0;
+}
+
+.gn-modal-row-sub {
+	color: var(--text-faint);
+	font-size: 0.85em;
 	word-break: break-all;
 }
 
@@ -653,6 +658,9 @@
 }
 
 .gn-work-cover--empty {
+	display: flex;
+	align-items: center;
+	justify-content: center;
 	width: 160px;
 	background-image: repeating-linear-gradient(
 		45deg,
@@ -661,6 +669,18 @@
 		var(--background-secondary-alt) 8px,
 		var(--background-secondary-alt) 16px
 	);
+}
+
+/* 空封面槽内的「刷新」按钮：空槽一律有（见 homeBoardView.coverRefreshButton） */
+.gn-cover-refresh {
+	font-size: 0.85em;
+	padding: 2px 12px;
+	background-color: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.gn-cover-refresh:hover {
+	background-color: var(--interactive-accent-hover);
 }
 
 /* 封面图（project 的 gnd_image）：高度撑满槽位、宽度按自身比例，填满、不裁切、不拉伸 */

@@ -361,6 +361,9 @@ export interface GndWorkCard {
 	filePath: string;
 	/** 封面图资源地址（取自 project 的 `gnd_image`）；无封面为 null，由 ui 渲染空槽 */
 	cover: string | null;
+	/** 声明的网络封面 URL（`gnd_image` 为 http/https 时记录）；本地封面或未声明为 null。
+	 *  空槽一律渲染「刷新」按钮，此字段只决定刷新走哪条路（非空=重下载，null=重解析），见 `refreshCover` */
+	remoteUrl: string | null;
 	/** 卡片背景色（取自 `projectColors`）；未分配为 null */
 	color: string | null;
 	/** `**WHERE**` 字段展示项；缺失或值为空的行不出现 */
@@ -404,12 +407,14 @@ export interface GndBoardModel {
  *   文件本身能用，只是取值不理想、或它指向／登记的东西不可用。
  * - `info` —— **运行期信息**：运行日志，以及扫描时观察到的数据缺失（如 `**WHERE**` 取空）。
  *
+ * **封面组失败与「手动重试」是两件事，不要混为一谈**：
+ * - 封面组 `COVER_*`（= error，进诊断区）说的是「这个封面**声明**坏了」——自动下载失败就是坏了；
+ * - 用户在看板空槽点「刷新」再失败，是**动作回执**（warning，进运行日志区，见 `logRuntime`），
+ *   不复用封面组的码、不改其级别。
+ *
  * 级别不参与排序（调试框按产生时间倒序），只用于行前缀与配色。
  */
 export type DiagnosticLevel = "error" | "warning" | "info";
-
-/** 诊断级别顺序 */
-export const DIAGNOSTIC_LEVELS: readonly DiagnosticLevel[] = ["error", "warning", "info"];
 
 /**
  * 稳定错误码：离线断言与脚本比对用它，不参与展示。
@@ -518,7 +523,9 @@ export interface INotifier {
  */
 export interface IFileWriter {
 	/**
-	 * 把文件移入回收站；成功返回 true，文件不存在返回 false。
+	 * 把文件或目录移入回收站；成功返回 true，目标不存在返回 false。
+	 *
+	 * 目录用于清理「删掉最后一个文件后剩下的空目录」——同样进回收站，可恢复。
 	 *
 	 * @param path 相对 vault 根的路径
 	 * @param system true = 系统回收站，false = Obsidian `.trash`

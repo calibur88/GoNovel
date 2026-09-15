@@ -107,6 +107,7 @@ export class BoardShellView extends ItemView {
 					this.render();
 				},
 				onCleanImages: () => this.cleanImages(),
+				onRefreshCover: (remoteUrl, source) => void this.controller.refreshCover(remoteUrl, source),
 			},
 			this.searchText,
 		);

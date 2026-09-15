@@ -4,9 +4,41 @@
 > 版本按迭代顺序倒序排列（最新在最上），编写规范见 CONTRIBUTING.md §6。
 > 0.1.0~0.4.0 为「开发版」（开发阶段的功能组合记录）；正式推送时再取消未推送标记、补写日期。
 
-## [0.8.0] - 未推送
+## [0.8.0] - 2026-09-16（当前）
 
-（开发中，本版变更待累加。）
+### 主工程（插件更新）
+
+**看板：空封面槽的「刷新」入口（空槽一律给按钮）**
+- **动机**：封面缺失时卡片只剩斜纹空槽——网络封面下载失败 / 缓存文件失效、本地 `gnd_image` 指向的图片不存在或被移走、图片在但宿主读取异常，这几种用户都没有挽回入口（网络侧还有会话级失败记忆，本会话不再自动重试）。
+- **新增（空槽一律有）**：`cover === null` 时槽内渲染「刷新」按钮，**不按封面类型分流**——`HomeBoardHandlers.onRefreshCover` → `HomeController.refreshCover(remoteUrl, source)`。`GndWorkCard.remoteUrl` 只决定走哪条路与悬浮文案，**不决定按钮是否出现**；缓存图 `<img>` 触发 `error`（缓存文件被删、本地图片被移走等）时同样退空槽并补上按钮。
+- **网络分支**：转 `retryCover` —— **清会话失败记忆 → 重新入队 → 触发后台填充**。`pendingCovers` + `fillingUrl` 双重去重（条目被 while 取走即出队，只判队列会漏掉「下载中重复点击」），`filling` 防并发，`while` 动态消费新入队条目、`refresh` 整轮成功才触发一次。
+- **本地 / 未声明分支**：`refreshLocalCover` —— **单独重解析这一张卡片**（真读一次作品文档 + `stat` 图片）：图片文件刚补回来、或上次因宿主异常没读到，这次就可能成。图片**存在**但浏览器仍渲染不出来（文件损坏等）属渲染层的事，这里判不出来——按钮照样留着，`<img>` 的 `error` 会再退回空槽。
+- **失败回执（⚠ 弹窗 + warning 运行日志）**：手动刷新**仍失败**时给一条 ⚠ 提示，并在调试框留一条 **warning 级**运行日志。`retryFeedback` 只登记用户主动刷新的 URL——后台自动填充失败仍静默，不打扰。**与封面组诊断刻意分开**：`COVER_*` 恒 error（封面声明坏了，进诊断区），刷新失败是**动作回执**（进运行日志区，`logRuntime(msg, "warning")`），不复用封面组的码、不改其级别。
+- **健壮性**：宿主异常一律等同「本次失败」，不再中断整轮——`fillPendingCovers` 内层 `await runCoverPipeline` 与 `resolveCover` 的本地分支（资源地址换算）都补了 try/catch，单张卡片的封面问题不会让整次扫描失败（那会让全部卡片都不更新）。
+- **诊断刷新只读化（行为变更）**：`refreshDiagnostics()` 不再触发 `fillPendingCovers()`——调试框「刷新」不再因诊断解析顺带联网下载与写盘；解析中登记的待下载封面留待下一次扫描消费。
+
+**工作台：删除文件时顺手清理空目录**
+- **动机**：删掉某个目录下最后一个文件后，空目录一直僵在文件树里，还得再删一次。
+- **行为**：`deleteFile` 删文件成功后向上清理（`pruneEmptyDirs`）——从父目录起逐级 `adapter.list` **物理判定**，目录为空（既无文件、也无子目录）就移入系统回收站，直到遇到非空目录或 vault 根为止。清理掉的目录列表并入提示文案：`已删除（进系统回收站）：a/b.gnd，并清理空目录：a`。
+- **只删真空目录**：目录里还剩任何文件 / 子目录（含 `.DS_Store` 这类隐藏项）都不动，避免误删——`listDir` 对**不存在**的目录也返回空，靠 `trash` 的失败返回兜住。
+- **host 能力放宽**：`IFileWriter.trash` 从「只接受文件」放宽到**文件或目录**（`TFile | TFolder`）——目录同样进系统回收站、可恢复，不做不可恢复的抹除。
+- **不动 `homePaths`**：登记是意图清单，目录被删后登记自然悬空（零输出、不报错），目录再建回来即自动复活——磁盘才是真值。
+
+**工作台：新增/删除操作计入运行日志 + 删除野路径有回执**
+- **新增记录**：`createFile` 成功记 `新增文件 | <path>`（info）；失败（路径为空 / 已存在不覆盖 / 建在 vault 根 / 宿主创建失败）记 `新增文件失败 | ...`（warning，说清具体原因）；父目录登记进 `homePaths` 的副作用也立刻在调试框可见。
+- **删除记录**：`deleteFile` 成功记 `删除文件 | <path>`（info）；目标是目录、文件不存在、回收站失败、宿主抛错都记 `删除文件失败 | ...`（warning）并给提示。
+- **修复盲区**：原 0.7.0 把「文件不存在」当目的已达、静默成功——`delete:test`（只写 `test`，落在 vault 根下、无父目录）点完确认毫无反馈；现改为给提示 + warning 运行日志。
+- **实现**：新增 `logAction(message, level)` 收口「记日志 + 立即 `emit()`」（`createFile`/`deleteFile` 不在扫描链上，不主动 emit 调试框要等下次扫描才刷出来）；`logRuntime(message, level="info"): boolean` 支持级别、返回是否记下（调试关着不记、返回 false）。
+
+**技术债清理（无行为变化）**
+- **注释与实现对齐**：工作台相关注释修正——`workspaceView` 两处「点文件按 gnd_type 分流」是已撤销全局路由方案的残留，改回「点文件一律进源码（看板只由主页管理卡片打开）」；`homeController.scopedFiles` / `workspaceShell` 的「不限扩展名」改为「只收 `.gnd`」（`filesInScope` / `walkPhysicalGnd` 实际只收 `.gnd`）；`PathInputModal` 注释示例后缀 `.md` 改为默认 `.gnd`。
+- **作用域根收口 core**：`scopeRootsOf` 增加**目录条目**参数（目录条目自身作根、文件条目取父目录），`HomeController.scopeRoots` 改为委托 core——此前 core / controller 各一套（controller 版多处理目录条目），verify-core 测的不是运行时用的那套；现补目录条目断言，测试与运行时行为对齐。
+- **死代码删除**：`DIAGNOSTIC_LEVELS` 常量（全库零引用）、`styles.css` 的 `.gn-modal-section`（无 TS 引用）；补上 `ImageCleanModal` 的 `gn-modal-row-paths` / `gn-modal-row-sub` 样式（图片清理弹窗的 URL 行此前无样式裸渲染）。
+- **配置**：删除 `package.json` 里引用不存在文件 `version-bump.mjs` 的 `version` script（版本节奏由维护者手动 bump，不受影响）。
+
+**兼容性**：`data.json` 无字段变化（仍为 7 字段）；纯增量 UI + 控制器内部行为收紧；`GndWorkCard` 是看板渲染期内部类型，不落盘；`IFileWriter.trash` 接口放宽（参数不变，原先只吃文件、现在文件与目录都吃，向后兼容）。行为变化——调试框「刷新」不再触发网络下载；删除文件后空父目录会被一并清理；运行日志新增 `warning` 级条目（既有 `LOG` 码，级别不再恒为 `info`），条目内容多「封面刷新失败」/「封面重新解析」/「删除空目录」。
+
+**测试情况**：`tsc -noEmit -skipLibCheck` 零错误；`node scripts/demo.mjs --check` 通过；`scripts/verify-core.ts` 共 **199 项断言、19 节**全通过（12c 节覆盖网络刷新三分支与失败回执 9 项；工作台节覆盖空目录清理 5 项、「新增/删除 debug 与 delete:test 野路径回执」6 项、作用域根目录条目 1 项；相对上版 198 +1 项）。
 
 ## [0.7.0] - 2026-09-13
 

@@ -10,7 +10,7 @@ import { openManagerView } from "./managerShell";
  * 工作台视图壳（`gonovel-workspace`，左侧边栏）。
  *
  * 四行：① 主页管理入口 → ② 树搜索 → ③ 新增 / 删除 → ④ 文件树。
- * 树数据 = 控制器扫描出的作用域文件（登记主页父目录子树，不限扩展名），
+ * 树数据 = 控制器扫描出的作用域 `.gnd` 文件（登记主页父目录子树，只收 `.gnd`），
  * 过滤与建树是 core 纯函数，本壳只持渲染期状态与交互转发。
  */
 export class WorkspaceShellView extends ItemView {
